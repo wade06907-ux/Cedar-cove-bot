@@ -1,0 +1,365 @@
+"""Authenticated staff dashboard API for Mega Bot.
+
+Required environment variables:
+  AUTH_API_URL=https://verification-server-gjqt.onrender.com
+  STAFF_DASHBOARD_ALLOWED_USERS=username1,email2@example.com
+  STAFF_DASHBOARD_GUILD_IDS=DiscordGuildId1,DiscordGuildId2
+  DASHBOARD_ALLOWED_ORIGINS=https://your-website.onrender.com
+"""
+import os
+import re
+import time
+from typing import Any
+from urllib.parse import urlparse
+
+import aiohttp
+import discord
+from aiohttp import web
+
+AUTH_API_URL = (os.getenv("AUTH_API_URL") or "https://verification-server-gjqt.onrender.com").rstrip("/")
+ALLOWED_USERS = {x.strip().casefold() for x in os.getenv("STAFF_DASHBOARD_ALLOWED_USERS", "").split(",") if x.strip()}
+ALLOWED_GUILDS = {x.strip() for x in os.getenv("STAFF_DASHBOARD_GUILD_IDS", "").split(",") if x.strip().isdigit()}
+ALLOWED_ORIGINS = {x.strip().rstrip("/") for x in os.getenv("DASHBOARD_ALLOWED_ORIGINS", "").split(",") if x.strip()}
+
+
+def setup_staff(bot, get_store, logger):
+    bot.staff_dashboard_store = get_store("staff_dashboard_configs")
+    bot.staff_dashboard_audit_store = get_store("staff_dashboard_audit")
+    bot.staff_dashboard_logger = logger
+
+
+def _origin(request: web.Request) -> str:
+    return (request.headers.get("Origin") or "").rstrip("/")
+
+
+def _headers(request: web.Request) -> dict:
+    origin = _origin(request)
+    headers = {"Vary": "Origin", "Cache-Control": "no-store"}
+    if origin and origin in ALLOWED_ORIGINS:
+        headers["Access-Control-Allow-Origin"] = origin
+        headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type"
+        headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, OPTIONS"
+    return headers
+
+
+def _json(request, data, status=200):
+    return web.json_response(data, status=status, headers=_headers(request))
+
+
+async def _authorized(request: web.Request):
+    if not ALLOWED_ORIGINS:
+        return None, _json(request, {"error": "Dashboard CORS is not configured. Set DASHBOARD_ALLOWED_ORIGINS on the bot service."}, 503)
+    if not ALLOWED_USERS:
+        return None, _json(request, {"error": "Dashboard access is not configured. Set STAFF_DASHBOARD_ALLOWED_USERS on the bot service."}, 503)
+    if not ALLOWED_GUILDS:
+        return None, _json(request, {"error": "Dashboard guild access is not configured. Set STAFF_DASHBOARD_GUILD_IDS on the bot service."}, 503)
+    origin = _origin(request)
+    if not origin or origin not in ALLOWED_ORIGINS:
+        return None, _json(request, {"error": "Website origin is not allowed."}, 403)
+    auth = request.headers.get("Authorization", "")
+    if not auth.startswith("Bearer ") or not auth[7:].strip():
+        return None, _json(request, {"error": "Sign in again to continue."}, 401)
+    timeout = aiohttp.ClientTimeout(total=8)
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(AUTH_API_URL + "/api/auth/me", headers={"Authorization": auth}) as resp:
+                if resp.status != 200:
+                    return None, _json(request, {"error": "Your website session is invalid or expired."}, 401)
+                user = await resp.json(content_type=None)
+    except Exception as exc:
+        request.app["staff_logger"].warning("Dashboard auth service unavailable: %s", exc)
+        return None, _json(request, {"error": "Could not verify your login session."}, 502)
+    identities = {str(user.get("username", "")).casefold(), str(user.get("email", "")).casefold()}
+    if not (identities & ALLOWED_USERS):
+        return None, _json(request, {"error": "Your website account is not allowed to use the staff dashboard."}, 403)
+    return user, None
+
+
+async def _guild(request, user):
+    gid = request.match_info.get("guild_id") or str((await request.json()).get("guildId", ""))
+    if not gid.isdigit() or gid not in ALLOWED_GUILDS:
+        return None, _json(request, {"error": "This server is not allowed for dashboard management."}, 403)
+    guild = request.app["staff_bot"].get_guild(int(gid))
+    if guild is None:
+        return None, _json(request, {"error": "The bot is not in that Discord server."}, 404)
+    return guild, None
+
+
+async def options_handler(request):
+    origin = _origin(request)
+    if not origin or origin not in ALLOWED_ORIGINS:
+        return web.Response(status=403, headers=_headers(request))
+    return web.Response(status=204, headers=_headers(request))
+
+
+async def api_status(request):
+    user, error = await _authorized(request)
+    if error:
+        return error
+    return _json(request, {"status": "ok", "user": user.get("username"), "guilds": len(ALLOWED_GUILDS)})
+
+
+async def list_guilds(request):
+    user, error = await _authorized(request)
+    if error:
+        return error
+    bot = request.app["staff_bot"]
+    items = []
+    for gid in sorted(ALLOWED_GUILDS):
+        guild = bot.get_guild(int(gid))
+        if guild:
+            items.append({"id": str(guild.id), "name": guild.name, "icon": guild.icon.url if guild.icon else None})
+    return _json(request, {"guilds": items})
+
+
+async def list_channels(request):
+    user, error = await _authorized(request)
+    if error:
+        return error
+    guild, error = await _guild(request, user)
+    if error:
+        return error
+    channels = []
+    for channel in sorted(guild.channels, key=lambda c: (getattr(c, "position", 0), c.name.casefold())):
+        if isinstance(channel, discord.CategoryChannel):
+            kind = "category"
+        elif isinstance(channel, discord.TextChannel) or isinstance(channel, discord.ForumChannel):
+            kind = "text"
+        elif isinstance(channel, discord.VoiceChannel):
+            kind = "voice"
+        else:
+            continue
+        channels.append({"id": str(channel.id), "name": channel.name, "type": kind, "categoryId": str(channel.category_id) if getattr(channel, "category_id", None) else None})
+    roles = [{"id": str(r.id), "name": r.name} for r in sorted(guild.roles, key=lambda r: r.position, reverse=True) if not r.is_default()]
+    return _json(request, {"channels": channels, "roles": roles})
+
+
+async def list_roles(request: web.Request):
+    user, error = await _authorized(request)
+    if error:
+        return error
+    guild, error = await _guild(request, user)
+    if error:
+        return error
+    roles = [
+        {"id": str(role.id), "name": role.name}
+        for role in sorted(guild.roles, key=lambda role: role.position, reverse=True)
+        if not role.is_default()
+    ]
+    return _json(request, {"roles": roles})
+
+
+async def get_config(request):
+    user, error = await _authorized(request)
+    if error:
+        return error
+    gid = request.match_info["guild_id"]
+    if not gid.isdigit() or gid not in ALLOWED_GUILDS:
+        return _json(request, {"error": "This server is not allowed."}, 403)
+    if request.app["staff_bot"].get_guild(int(gid)) is None:
+        return _json(request, {"error": "The bot is not in that server."}, 404)
+    config = await request.app["staff_store"].get(gid, {})
+    return _json(request, {"guildId": gid, "config": config})
+
+
+async def save_config(request):
+    user, error = await _authorized(request)
+    if error:
+        return error
+    gid = request.match_info["guild_id"]
+    if not gid.isdigit() or gid not in ALLOWED_GUILDS:
+        return _json(request, {"error": "This server is not allowed."}, 403)
+    if request.app["staff_bot"].get_guild(int(gid)) is None:
+        return _json(request, {"error": "The bot is not in that server."}, 404)
+    try:
+        body = await request.json()
+        config = body.get("config")
+        if not isinstance(config, dict) or not isinstance(config.get("modules"), dict):
+            return _json(request, {"error": "Invalid configuration format."}, 400)
+        raw = str(config.get("guildId", gid))
+        if raw != gid:
+            return _json(request, {"error": "Configuration server ID does not match the request."}, 400)
+        if len(str(config)) > 100_000:
+            return _json(request, {"error": "Configuration is too large."}, 413)
+        # Only retain expected top-level fields; no secrets are accepted.
+        clean = {"guildId": gid, "timezone": str(config.get("timezone", ""))[:100], "modules": {}}
+        for name, settings in config["modules"].items():
+            if not re.fullmatch(r"[a-zA-Z0-9_-]{1,40}", str(name)) or not isinstance(settings, dict):
+                continue
+            entry = {}
+            for key, value in settings.items():
+                if isinstance(value, (str, int, float, bool)) or value is None:
+                    entry[str(key)[:60]] = value if not isinstance(value, str) else value[:4000]
+            clean["modules"][str(name)] = entry
+        await request.app["staff_store"].set(gid, clean)
+        await _audit(request, gid, user, "save_config", "Dashboard configuration saved")
+        return _json(request, {"ok": True, "config": clean})
+    except (ValueError, TypeError):
+        return _json(request, {"error": "Invalid JSON body."}, 400)
+
+
+async def publish_panel(request):
+    user, error = await _authorized(request)
+    if error:
+        return error
+    try:
+        body = await request.json()
+    except Exception:
+        return _json(request, {"error": "Invalid JSON body."}, 400)
+    gid = str(body.get("guildId", ""))
+    if not gid.isdigit() or gid not in ALLOWED_GUILDS:
+        return _json(request, {"error": "This server is not allowed."}, 403)
+    guild = request.app["staff_bot"].get_guild(int(gid))
+    if guild is None:
+        return _json(request, {"error": "The bot is not in that server."}, 404)
+    modules = body.get("config", {}).get("modules", {})
+    panel = modules.get("tickets", {}) if isinstance(modules, dict) else {}
+    channel_id = panel.get("panelChannelId")
+    if not str(channel_id or "").isdigit():
+        return _json(request, {"error": "Choose a panel destination channel first."}, 400)
+    channel = guild.get_channel(int(channel_id))
+    if not isinstance(channel, discord.TextChannel):
+        return _json(request, {"error": "The selected panel destination is not a text channel in this server."}, 400)
+    me = guild.me
+    perms = channel.permissions_for(me) if me else None
+    if not perms or not (perms.send_messages and perms.embed_links):
+        return _json(request, {"error": "The bot needs Send Messages and Embed Links in the selected channel."}, 403)
+    category_id = panel.get("categoryId")
+    role_id = panel.get("supportRoleId")
+    category = guild.get_channel(int(category_id)) if str(category_id or "").isdigit() else None
+    role = guild.get_role(int(role_id)) if str(role_id or "").isdigit() else None
+    if category_id and not isinstance(category, discord.CategoryChannel):
+        return _json(request, {"error": "Choose a valid ticket category from this server."}, 400)
+    if role_id and role is None:
+        return _json(request, {"error": "Choose a valid support role from this server."}, 400)
+    title = str(panel.get("title") or "How can we help?")[:256]
+    description = str(panel.get("message") or "Choose an option below and our staff team will help you.")[:4000]
+    types = [x.strip()[:80] for x in str(panel.get("types") or "General Support").splitlines() if x.strip()][:25]
+    if not types:
+        types = ["General Support"]
+    options = [{"label": x, "description": None, "emoji": None, "ticket_message": None, "category_id": int(category.id) if category else None, "role_id": int(role.id) if role else None} for x in types]
+    embed = discord.Embed(title=title, description=description, color=discord.Color.blurple())
+    embed.set_footer(text=guild.name, icon_url=guild.icon.url if guild.icon else None)
+    try:
+        if len(options) == 1:
+            view = discord.ui.View(timeout=None)
+            button_label = str(panel.get("buttonLabel") or "Open Ticket")[:80]
+            view.add_item(discord.ui.Button(label=button_label, style=discord.ButtonStyle.blurple, custom_id="persistent:ticket_open_btn"))
+        else:
+            view = discord.ui.View(timeout=None)
+            view.add_item(discord.ui.Select(placeholder="Select a ticket type...", custom_id="persistent:ticket_select_menu", options=[discord.SelectOption(label=o["label"], value=str(i)) for i, o in enumerate(options)]))
+        msg = await channel.send(embed=embed, view=view)
+        panel_record = {"title": title, "description": description, "channel_id": int(channel.id), "category_id": int(category.id) if category else None, "role_id": int(role.id) if role else None, "options": options, "message_id": msg.id, "guild_id": guild.id, "created_by_dashboard": True}
+        await request.app["panels_store"].set(msg.id, panel_record)
+        await _audit(request, gid, user, "publish_panel", f"Ticket panel posted in #{channel.name}")
+        return _json(request, {"ok": True, "channelId": str(channel.id), "channelName": channel.name, "messageId": str(msg.id)})
+    except discord.Forbidden:
+        return _json(request, {"error": "Discord denied the request. Check the bot's channel permissions."}, 403)
+    except discord.HTTPException as exc:
+        return _json(request, {"error": f"Discord could not post the panel (HTTP {exc.status})."}, 502)
+
+
+async def send_module_message(request):
+    user, error = await _authorized(request)
+    if error:
+        return error
+    try:
+        body = await request.json()
+    except Exception:
+        return _json(request, {"error": "Invalid JSON body."}, 400)
+    gid, module_name = str(body.get("guildId", "")), str(body.get("module", ""))
+    if not gid.isdigit() or gid not in ALLOWED_GUILDS:
+        return _json(request, {"error": "This server is not allowed."}, 403)
+    guild = request.app["staff_bot"].get_guild(int(gid))
+    if guild is None:
+        return _json(request, {"error": "The bot is not in that server."}, 404)
+    config = await request.app["staff_store"].get(gid, {})
+    module = config.get("modules", {}).get(module_name, {})
+    if not module or not module.get("enabled"):
+        return _json(request, {"error": "Enable and save this module before sending a message."}, 400)
+    channel_id = module.get("channelId") or module.get("logChannelId")
+    if not str(channel_id or "").isdigit():
+        return _json(request, {"error": "Choose and save a destination channel first."}, 400)
+    channel = guild.get_channel(int(channel_id))
+    if not isinstance(channel, discord.TextChannel):
+        return _json(request, {"error": "The configured destination is not a text channel in this server."}, 400)
+    template = str(module.get("template") or f"{module_name.title()} notification")[:1800]
+    content = str(body.get("message") or template)[:1900]
+    if not content.strip():
+        return _json(request, {"error": "Message cannot be empty."}, 400)
+    try:
+        await channel.send(content, allowed_mentions=discord.AllowedMentions.none())
+        await _audit(request, gid, user, "send_message", f"{module_name} message sent to #{channel.name}")
+        return _json(request, {"ok": True, "channelId": str(channel.id), "channelName": channel.name})
+    except discord.Forbidden:
+        return _json(request, {"error": "The bot cannot send messages in that channel."}, 403)
+    except discord.HTTPException as exc:
+        return _json(request, {"error": f"Discord could not send the message (HTTP {exc.status})."}, 502)
+
+
+async def list_audit(request):
+    user, error = await _authorized(request)
+    if error:
+        return error
+    gid = request.match_info["guild_id"]
+    if not gid.isdigit() or gid not in ALLOWED_GUILDS:
+        return _json(request, {"error": "This server is not allowed."}, 403)
+    records = await request.app["audit_store"].get(gid, [])
+    return _json(request, {"items": list(reversed(records[-100:]))})
+
+
+async def _audit(request, gid, user, action, detail):
+    store = request.app["audit_store"]
+    records = await store.get(gid, [])
+    if not isinstance(records, list):
+        records = []
+    records.append({"time": int(time.time()), "actor": str(user.get("username", "staff"))[:80], "action": action, "detail": detail[:500]})
+    await store.set(gid, records[-500:])
+
+
+def register_staff_routes(app: web.Application):
+    app["staff_logger"] = __import__("logging").getLogger("mega_bot.staff_dashboard")
+    # Routes are attached by start_health_server after setup_staff has been called.
+    async def bind_app_context(request):
+        return None
+
+    # The bot and stores are passed in through module globals by setup_staff.
+    # Capture the configured values from setup_staff's bot reference.
+    # They are resolved lazily so the health server can be constructed safely.
+    import sys
+    module = sys.modules[__name__]
+    bot = getattr(module, "_bot", None)
+    if bot is None:
+        # setup_staff stores the bot in a module global below via wrapper patch.
+        bot = getattr(app, "_staff_bot", None)
+    if bot is None:
+        # register_staff_routes is invoked after setup_staff in mega_bot.py.
+        bot = _configured_bot
+    app["staff_bot"] = bot
+    app["staff_store"] = bot.staff_dashboard_store
+    app["audit_store"] = bot.staff_dashboard_audit_store
+    app["panels_store"] = bot.staff_dashboard_store_for_panels
+    app.router.add_route("OPTIONS", "/api/dashboard/{tail:.*}", options_handler)
+    app.router.add_get("/api/dashboard/status", api_status)
+    app.router.add_get("/api/dashboard/guilds", list_guilds)
+    app.router.add_get("/api/dashboard/guilds/{guild_id}/channels", list_channels)
+    app.router.add_get("/api/dashboard/guilds/{guild_id}/roles", list_roles)
+    app.router.add_get("/api/dashboard/guilds/{guild_id}/config", get_config)
+    app.router.add_put("/api/dashboard/guilds/{guild_id}/config", save_config)
+    # Compatibility aliases for dashboard versions that use /settings.
+    app.router.add_get("/api/dashboard/guilds/{guild_id}/settings", get_config)
+    app.router.add_put("/api/dashboard/guilds/{guild_id}/settings", save_config)
+    app.router.add_post("/api/dashboard/publish-panel", publish_panel)
+    app.router.add_post("/api/dashboard/send-message", send_module_message)
+    app.router.add_get("/api/dashboard/guilds/{guild_id}/audit", list_audit)
+
+
+_configured_bot = None
+
+# Wrap setup_staff above to keep route registration dependency-free for mega_bot.py.
+_original_setup_staff = setup_staff
+def setup_staff(bot, get_store, logger):
+    global _configured_bot
+    _configured_bot = bot
+    _original_setup_staff(bot, get_store, logger)
+    bot.staff_dashboard_store_for_panels = get_store("panels")
