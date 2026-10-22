@@ -213,8 +213,9 @@ async def publish_panel(request):
         return _json(request, {"error": "Choose a valid ticket category from this server."}, 400)
     if role_id and role is None:
         return _json(request, {"error": "Choose a valid support role from this server."}, 400)
-    title = str(panel.get("title") or "How can we help?")[:256]
-    description = str(panel.get("message") or "Choose an option below and our staff team will help you.")[:4000]
+    title = str(panel.get("panelTitle") or panel.get("title") or "How can we help?")[:256]
+    description = str(panel.get("panelMessage") or panel.get("message") or "Choose an option below and our staff team will help you.")[:4000]
+    ticket_welcome = str(panel.get("ticketWelcomeMessage") or "Thank you for contacting support.\nPlease describe your issue and wait for a response.")[:4000]
     types = [x.strip()[:80] for x in str(panel.get("types") or "General Support").splitlines() if x.strip()][:25]
     if not types:
         types = ["General Support"]
@@ -230,7 +231,7 @@ async def publish_panel(request):
             view = discord.ui.View(timeout=None)
             view.add_item(discord.ui.Select(placeholder="Select a ticket type...", custom_id="persistent:ticket_select_menu", options=[discord.SelectOption(label=o["label"], value=str(i)) for i, o in enumerate(options)]))
         msg = await channel.send(embed=embed, view=view)
-        panel_record = {"title": title, "description": description, "channel_id": int(channel.id), "category_id": int(category.id) if category else None, "role_id": int(role.id) if role else None, "options": options, "message_id": msg.id, "guild_id": guild.id, "created_by_dashboard": True}
+        panel_record = {"title": title, "description": description, "ticket_message": ticket_welcome, "button_label": str(panel.get("buttonLabel") or "Open Ticket")[:80], "channel_id": int(channel.id), "category_id": int(category.id) if category else None, "role_id": int(role.id) if role else None, "options": options, "message_id": msg.id, "guild_id": guild.id, "created_by_dashboard": True}
         await request.app["panels_store"].set(msg.id, panel_record)
         await _audit(request, gid, user, "publish_panel", f"Ticket panel posted in #{channel.name}")
         return _json(request, {"ok": True, "channelId": str(channel.id), "channelName": channel.name, "messageId": str(msg.id)})
@@ -256,14 +257,14 @@ async def send_module_message(request):
         return _json(request, {"error": "The bot is not in that server."}, 404)
     config = await request.app["staff_store"].get(gid, {})
     module = config.get("modules", {}).get(module_name, {})
-    if not module or not module.get("enabled"):
-        return _json(request, {"error": "Enable and save this module before sending a message."}, 400)
-    channel_id = module.get("channelId") or module.get("logChannelId")
+    if not body.get("channelId") and (not module or not module.get("enabled")):
+        return _json(request, {"error": "Enable and save this module, or choose a destination channel."}, 400)
+    channel_id = body.get("channelId") or module.get("channelId") or module.get("logChannelId")
     if not str(channel_id or "").isdigit():
-        return _json(request, {"error": "Choose and save a destination channel first."}, 400)
+        return _json(request, {"error": "Choose a destination channel first."}, 400)
     channel = guild.get_channel(int(channel_id))
     if not isinstance(channel, discord.TextChannel):
-        return _json(request, {"error": "The configured destination is not a text channel in this server."}, 400)
+        return _json(request, {"error": "The destination is not a text channel in this server."}, 400)
     template = str(module.get("template") or f"{module_name.title()} notification")[:1800]
     content = str(body.get("message") or template)[:1900]
     if not content.strip():
