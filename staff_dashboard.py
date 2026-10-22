@@ -1,10 +1,10 @@
-"""Authenticated staff dashboard API for Mega Bot.
+"""Session-authenticated staff dashboard API for Mega Bot.
 
-Required environment variables:
+Required environment variable:
   AUTH_API_URL=https://verification-server-gjqt.onrender.com
-  STAFF_DASHBOARD_ALLOWED_USERS=username1,email2@example.com
-  STAFF_DASHBOARD_GUILD_IDS=DiscordGuildId1,DiscordGuildId2
-  DASHBOARD_ALLOWED_ORIGINS=https://your-website.onrender.com
+
+CORS uses wildcard origins without browser cookies; API calls require a valid
+bearer session token verified by the verification service.
 """
 import os
 import re
@@ -17,9 +17,6 @@ import discord
 from aiohttp import web
 
 AUTH_API_URL = (os.getenv("AUTH_API_URL") or "https://verification-server-gjqt.onrender.com").rstrip("/")
-ALLOWED_USERS = {x.strip().casefold() for x in os.getenv("STAFF_DASHBOARD_ALLOWED_USERS", "").split(",") if x.strip()}
-ALLOWED_GUILDS = {x.strip() for x in os.getenv("STAFF_DASHBOARD_GUILD_IDS", "").split(",") if x.strip().isdigit()}
-ALLOWED_ORIGINS = {x.strip().rstrip("/") for x in os.getenv("DASHBOARD_ALLOWED_ORIGINS", "").split(",") if x.strip()}
 
 
 def setup_staff(bot, get_store, logger):
@@ -33,13 +30,13 @@ def _origin(request: web.Request) -> str:
 
 
 def _headers(request: web.Request) -> dict:
-    origin = _origin(request)
-    headers = {"Vary": "Origin", "Cache-Control": "no-store"}
-    if origin and origin in ALLOWED_ORIGINS:
-        headers["Access-Control-Allow-Origin"] = origin
-        headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type"
-        headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, OPTIONS"
-    return headers
+    return {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Headers": "Authorization, Content-Type",
+        "Access-Control-Allow-Methods": "GET, POST, PUT, OPTIONS",
+        "Vary": "Origin",
+        "Cache-Control": "no-store",
+    }
 
 
 def _json(request, data, status=200):
@@ -47,15 +44,6 @@ def _json(request, data, status=200):
 
 
 async def _authorized(request: web.Request):
-    if not ALLOWED_ORIGINS:
-        return None, _json(request, {"error": "Dashboard CORS is not configured. Set DASHBOARD_ALLOWED_ORIGINS on the bot service."}, 503)
-    if not ALLOWED_USERS:
-        return None, _json(request, {"error": "Dashboard access is not configured. Set STAFF_DASHBOARD_ALLOWED_USERS on the bot service."}, 503)
-    if not ALLOWED_GUILDS:
-        return None, _json(request, {"error": "Dashboard guild access is not configured. Set STAFF_DASHBOARD_GUILD_IDS on the bot service."}, 503)
-    origin = _origin(request)
-    if not origin or origin not in ALLOWED_ORIGINS:
-        return None, _json(request, {"error": "Website origin is not allowed."}, 403)
     auth = request.headers.get("Authorization", "")
     if not auth.startswith("Bearer ") or not auth[7:].strip():
         return None, _json(request, {"error": "Sign in again to continue."}, 401)
@@ -69,15 +57,12 @@ async def _authorized(request: web.Request):
     except Exception as exc:
         request.app["staff_logger"].warning("Dashboard auth service unavailable: %s", exc)
         return None, _json(request, {"error": "Could not verify your login session."}, 502)
-    identities = {str(user.get("username", "")).casefold(), str(user.get("email", "")).casefold()}
-    if not (identities & ALLOWED_USERS):
-        return None, _json(request, {"error": "Your website account is not allowed to use the staff dashboard."}, 403)
     return user, None
 
 
 async def _guild(request, user):
     gid = request.match_info.get("guild_id") or str((await request.json()).get("guildId", ""))
-    if not gid.isdigit() or gid not in ALLOWED_GUILDS:
+    if not gid.isdigit() or request.app["staff_bot"].get_guild(int(gid)) is None:
         return None, _json(request, {"error": "This server is not allowed for dashboard management."}, 403)
     guild = request.app["staff_bot"].get_guild(int(gid))
     if guild is None:
@@ -86,9 +71,6 @@ async def _guild(request, user):
 
 
 async def options_handler(request):
-    origin = _origin(request)
-    if not origin or origin not in ALLOWED_ORIGINS:
-        return web.Response(status=403, headers=_headers(request))
     return web.Response(status=204, headers=_headers(request))
 
 
@@ -96,7 +78,7 @@ async def api_status(request):
     user, error = await _authorized(request)
     if error:
         return error
-    return _json(request, {"status": "ok", "user": user.get("username"), "guilds": len(ALLOWED_GUILDS)})
+    return _json(request, {"status": "ok", "user": user.get("username"), "guilds": len(request.app["staff_bot"].guilds)})
 
 
 async def list_guilds(request):
@@ -104,11 +86,10 @@ async def list_guilds(request):
     if error:
         return error
     bot = request.app["staff_bot"]
-    items = []
-    for gid in sorted(ALLOWED_GUILDS):
-        guild = bot.get_guild(int(gid))
-        if guild:
-            items.append({"id": str(guild.id), "name": guild.name, "icon": guild.icon.url if guild.icon else None})
+    items = [
+        {"id": str(guild.id), "name": guild.name, "icon": guild.icon.url if guild.icon else None}
+        for guild in sorted(bot.guilds, key=lambda item: item.name.casefold())
+    ]
     return _json(request, {"guilds": items})
 
 
@@ -154,7 +135,7 @@ async def get_config(request):
     if error:
         return error
     gid = request.match_info["guild_id"]
-    if not gid.isdigit() or gid not in ALLOWED_GUILDS:
+    if not gid.isdigit() or request.app["staff_bot"].get_guild(int(gid)) is None:
         return _json(request, {"error": "This server is not allowed."}, 403)
     if request.app["staff_bot"].get_guild(int(gid)) is None:
         return _json(request, {"error": "The bot is not in that server."}, 404)
@@ -167,7 +148,7 @@ async def save_config(request):
     if error:
         return error
     gid = request.match_info["guild_id"]
-    if not gid.isdigit() or gid not in ALLOWED_GUILDS:
+    if not gid.isdigit() or request.app["staff_bot"].get_guild(int(gid)) is None:
         return _json(request, {"error": "This server is not allowed."}, 403)
     if request.app["staff_bot"].get_guild(int(gid)) is None:
         return _json(request, {"error": "The bot is not in that server."}, 404)
@@ -207,7 +188,7 @@ async def publish_panel(request):
     except Exception:
         return _json(request, {"error": "Invalid JSON body."}, 400)
     gid = str(body.get("guildId", ""))
-    if not gid.isdigit() or gid not in ALLOWED_GUILDS:
+    if not gid.isdigit() or request.app["staff_bot"].get_guild(int(gid)) is None:
         return _json(request, {"error": "This server is not allowed."}, 403)
     guild = request.app["staff_bot"].get_guild(int(gid))
     if guild is None:
@@ -268,7 +249,7 @@ async def send_module_message(request):
     except Exception:
         return _json(request, {"error": "Invalid JSON body."}, 400)
     gid, module_name = str(body.get("guildId", "")), str(body.get("module", ""))
-    if not gid.isdigit() or gid not in ALLOWED_GUILDS:
+    if not gid.isdigit() or request.app["staff_bot"].get_guild(int(gid)) is None:
         return _json(request, {"error": "This server is not allowed."}, 403)
     guild = request.app["staff_bot"].get_guild(int(gid))
     if guild is None:
@@ -302,7 +283,7 @@ async def list_audit(request):
     if error:
         return error
     gid = request.match_info["guild_id"]
-    if not gid.isdigit() or gid not in ALLOWED_GUILDS:
+    if not gid.isdigit() or request.app["staff_bot"].get_guild(int(gid)) is None:
         return _json(request, {"error": "This server is not allowed."}, 403)
     records = await request.app["audit_store"].get(gid, [])
     return _json(request, {"items": list(reversed(records[-100:]))})
