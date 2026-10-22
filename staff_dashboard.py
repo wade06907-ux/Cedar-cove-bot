@@ -17,6 +17,7 @@ import discord
 from aiohttp import web
 
 AUTH_API_URL = (os.getenv("AUTH_API_URL") or "https://verification-server-gjqt.onrender.com").rstrip("/")
+DASHBOARD_API_BUILD = "cors-wildcard-2026-10-22"
 
 
 def setup_staff(bot, get_store, logger):
@@ -72,6 +73,11 @@ async def _guild(request, user):
 
 async def options_handler(request):
     return web.Response(status=204, headers=_headers(request))
+
+
+async def api_build(request):
+    # Public diagnostic endpoint: confirms which dashboard API code Render is serving.
+    return _json(request, {"service": "cedar-cove-bot-dashboard-api", "build": DASHBOARD_API_BUILD, "cors": "wildcard", "originAllowlistRequired": False})
 
 
 async def api_status(request):
@@ -300,6 +306,7 @@ async def _audit(request, gid, user, action, detail):
 
 def register_staff_routes(app: web.Application):
     app["staff_logger"] = __import__("logging").getLogger("mega_bot.staff_dashboard")
+    app["staff_logger"].info("Staff dashboard API build=%s; wildcard CORS enabled; DASHBOARD_ALLOWED_ORIGINS is not required.", DASHBOARD_API_BUILD)
     # Routes are attached by start_health_server after setup_staff has been called.
     async def bind_app_context(request):
         return None
@@ -321,6 +328,7 @@ def register_staff_routes(app: web.Application):
     app["audit_store"] = bot.staff_dashboard_audit_store
     app["panels_store"] = bot.staff_dashboard_store_for_panels
     app.router.add_route("OPTIONS", "/api/dashboard/{tail:.*}", options_handler)
+    app.router.add_get("/api/dashboard/build", api_build)
     app.router.add_get("/api/dashboard/status", api_status)
     app.router.add_get("/api/dashboard/guilds", list_guilds)
     app.router.add_get("/api/dashboard/guilds/{guild_id}/channels", list_channels)
