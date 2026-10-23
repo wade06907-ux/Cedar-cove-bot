@@ -20,6 +20,7 @@ from aiohttp import web
 AUTH_API_URL = (os.getenv("AUTH_API_URL") or "https://verification-server-gjqt.onrender.com").rstrip("/")
 DASHBOARD_API_BUILD = "staff-manager-2026-10-23"
 STAFF_ACCOUNT_DELETE_SECRET = os.getenv("STAFF_ACCOUNT_DELETE_SECRET", "").strip()
+STAFF_DASHBOARD_ALLOWED_USERS = {value.strip().casefold() for value in os.getenv("STAFF_DASHBOARD_ALLOWED_USERS", "").split(",") if value.strip()}
 STAFF_ROLE_NAMES = {"owner": "Owner", "co owner": "Co Owner", "admin": "Admin", "administrator": "Admin"}
 
 
@@ -321,25 +322,26 @@ async def _staff_manager(request):
     user, error = await _authorized(request)
     if error:
         return None, None, error
-    discord_id = str(user.get("discordId") or "")
-    if not discord_id.isdigit():
-        return None, None, _json(request, {"error": "Link your Discord account in Settings before using Staff Management."}, 403)
+
+    # Staff Console access is controlled by the website account allowlist.
+    # It intentionally does not require Discord OAuth or a linked Discord ID.
+    if not STAFF_DASHBOARD_ALLOWED_USERS:
+        return None, None, _json(request, {
+            "error": "Staff Management is not configured. Set STAFF_DASHBOARD_ALLOWED_USERS on the bot service."
+        }, 503)
+
+    identities = {
+        str(user.get("username") or "").strip().casefold(),
+        str(user.get("email") or "").strip().casefold(),
+    } - {""}
+    if not identities.intersection(STAFF_DASHBOARD_ALLOWED_USERS):
+        return None, None, _json(request, {
+            "error": "This website account is not authorized for Staff Management."
+        }, 403)
+
     guild = _staff_guild(request)
     if guild is None:
         return None, None, _json(request, {"error": "The bot could not find the configured Cedar Cove server. Set GUILD_ID in the bot service environment."}, 503)
-    member = guild.get_member(int(discord_id))
-    if member is None:
-        try:
-            member = await guild.fetch_member(int(discord_id))
-        except discord.NotFound:
-            return None, None, _json(request, {"error": "Your linked Discord account is not a member of the staff server."}, 403)
-        except discord.HTTPException:
-            return None, None, _json(request, {"error": "Discord could not verify your server membership. Try again."}, 502)
-    if member.bot:
-        return None, None, _json(request, {"error": "Bot accounts cannot access Staff Management."}, 403)
-    roles = {r.name.casefold() for r in member.roles}
-    if not ({"owner", "co owner", "admin", "administrator"} & roles):
-        return None, None, _json(request, {"error": "Staff Management requires the actual Owner, Co Owner, or Admin role in Discord."}, 403)
     return user, guild, None
 
 
@@ -375,7 +377,7 @@ async def staff_list(request):
         record = records.get(str(member.id), {})
         loa_status = _loa_state(record)
         items.append({"id": str(member.id), "username": member.name, "displayName": member.display_name, "avatar": member.display_avatar.url, "roles": roles, "warnings": len(record.get("warnings", [])), "strikes": len(record.get("strikes", [])), "suspended": bool(record.get("suspended")), "loaStatus": loa_status})
-    return _json(request, {"guild": guild.name, "items": items, "viewerRoles": _member_staff_roles(guild.get_member(int(user["discordId"]))) })
+    return _json(request, {"guild": guild.name, "items": items, "viewerRoles": ["Dashboard Authorized"]})
 
 
 async def staff_detail(request):
