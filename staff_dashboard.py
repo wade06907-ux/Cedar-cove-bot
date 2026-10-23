@@ -20,7 +20,6 @@ from aiohttp import web
 AUTH_API_URL = (os.getenv("AUTH_API_URL") or "https://verification-server-gjqt.onrender.com").rstrip("/")
 DASHBOARD_API_BUILD = "staff-manager-2026-10-23"
 STAFF_ACCOUNT_DELETE_SECRET = os.getenv("STAFF_ACCOUNT_DELETE_SECRET", "").strip()
-STAFF_DASHBOARD_ALLOWED_USERS = {value.strip().casefold() for value in os.getenv("STAFF_DASHBOARD_ALLOWED_USERS", "").split(",") if value.strip()}
 STAFF_ROLE_NAMES = {"owner": "Owner", "co owner": "Co Owner", "admin": "Admin", "administrator": "Admin"}
 
 
@@ -323,20 +322,10 @@ async def _staff_manager(request):
     if error:
         return None, None, error
 
-    # Staff Console access is controlled by the website account allowlist.
-    # It intentionally does not require Discord OAuth or a linked Discord ID.
-    if not STAFF_DASHBOARD_ALLOWED_USERS:
+    # Dashboard access is approved in the verification server's users.whitelisted field.
+    if not bool(user.get("whitelisted", False)):
         return None, None, _json(request, {
-            "error": "Staff Management is not configured. Set STAFF_DASHBOARD_ALLOWED_USERS on the bot service."
-        }, 503)
-
-    identities = {
-        str(user.get("username") or "").strip().casefold(),
-        str(user.get("email") or "").strip().casefold(),
-    } - {""}
-    if not identities.intersection(STAFF_DASHBOARD_ALLOWED_USERS):
-        return None, None, _json(request, {
-            "error": "This website account is not authorized for Staff Management."
+            "error": "Your website account has not been approved for dashboard access."
         }, 403)
 
     guild = _staff_guild(request)
@@ -467,6 +456,24 @@ async def staff_action(request):
     elif action == "unsuspend":
         record["suspended"] = False
         record["suspensionEndedAt"] = now
+    elif action in {"grant_dashboard_access", "revoke_dashboard_access"}:
+        target_username = str(body.get("username") or "").strip()
+        if not target_username:
+            return _json(request, {"error": "Enter the website username to update."}, 400)
+        if not STAFF_ACCOUNT_DELETE_SECRET:
+            return _json(request, {"error": "Dashboard access management is not configured. Set STAFF_ACCOUNT_DELETE_SECRET on both services."}, 503)
+        allowed = action == "grant_dashboard_access"
+        timeout = aiohttp.ClientTimeout(total=10)
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.post(AUTH_API_URL + "/api/internal/staff/dashboard-access", json={"username": target_username, "allowed": allowed}, headers={"X-Staff-Manager-Key": STAFF_ACCOUNT_DELETE_SECRET}) as resp:
+                    payload = await resp.json(content_type=None)
+                    if resp.status != 200:
+                        return _json(request, {"error": payload.get("error", "Could not update dashboard access.")}, resp.status)
+        except Exception:
+            request.app["staff_logger"].exception("Dashboard access update failed")
+            return _json(request, {"error": "Could not reach the verification service."}, 502)
+        record.setdefault("accountActions", []).append({"action": action, "username": payload.get("username", target_username), "by": actor, "at": now})
     elif action == "delete_account":
         if not STAFF_ACCOUNT_DELETE_SECRET:
             return _json(request, {"error": "Account deletion is not configured yet. Set STAFF_ACCOUNT_DELETE_SECRET on both the bot and verification services."}, 503)
