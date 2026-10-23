@@ -453,7 +453,7 @@ async def staff_action(request):
     elif action == "delete_account":
         if not STAFF_ACCOUNT_DELETE_SECRET:
             return _json(request, {"error": "Account deletion is not configured yet. Set STAFF_ACCOUNT_DELETE_SECRET on both the bot and verification services."}, 503)
-        if str(member.id) == str(user.get("discordId")):
+        if str(member_id) == str(user.get("discordId")):
             return _json(request, {"error": "You cannot delete your own dashboard account here."}, 400)
         timeout = aiohttp.ClientTimeout(total=10)
         try:
