@@ -335,6 +335,8 @@ async def _staff_manager(request):
             return None, None, _json(request, {"error": "Your linked Discord account is not a member of the staff server."}, 403)
         except discord.HTTPException:
             return None, None, _json(request, {"error": "Discord could not verify your server membership. Try again."}, 502)
+    if member.bot:
+        return None, None, _json(request, {"error": "Bot accounts cannot access Staff Management."}, 403)
     roles = {r.name.casefold() for r in member.roles}
     if not ({"owner", "co owner", "admin", "administrator"} & roles):
         return None, None, _json(request, {"error": "Staff Management requires the actual Owner, Co Owner, or Admin role in Discord."}, 403)
@@ -387,6 +389,11 @@ async def staff_detail(request):
         member = guild.get_member(int(member_id)) or await guild.fetch_member(int(member_id))
     except discord.NotFound:
         return _json(request, {"error": "Staff member is no longer in the server."}, 404)
+    except discord.HTTPException:
+        return _json(request, {"error": "Discord could not load this member. Try again."}, 502)
+    roles = _member_staff_roles(member)
+    if member.bot or not roles:
+        return _json(request, {"error": "Only human staff members can be managed here."}, 403)
     record = await request.app["staff_management_store"].get(str(guild.id), {})
     item = record.get(str(member.id), {}) if isinstance(record, dict) else {}
     return _json(request, {"member": {"id": str(member.id), "username": member.name, "displayName": member.display_name, "roles": _member_staff_roles(member)}, "record": item, "loaStatus": _loa_state(item)})
@@ -399,6 +406,14 @@ async def staff_action(request):
     member_id = request.match_info["member_id"]
     if not member_id.isdigit():
         return _json(request, {"error": "Invalid Discord member ID."}, 400)
+    try:
+        member = guild.get_member(int(member_id)) or await guild.fetch_member(int(member_id))
+    except discord.NotFound:
+        return _json(request, {"error": "Staff member is no longer in the server."}, 404)
+    except discord.HTTPException:
+        return _json(request, {"error": "Discord could not load this member. Try again."}, 502)
+    if member.bot or not _member_staff_roles(member):
+        return _json(request, {"error": "Only human staff members can be managed here."}, 403)
     try:
         body = await request.json()
     except Exception:
