@@ -9,6 +9,7 @@ bearer session token verified by the verification service.
 import os
 import re
 import time
+import secrets
 from typing import Any
 from urllib.parse import urlparse
 
@@ -17,7 +18,9 @@ import discord
 from aiohttp import web
 
 AUTH_API_URL = (os.getenv("AUTH_API_URL") or "https://verification-server-gjqt.onrender.com").rstrip("/")
-DASHBOARD_API_BUILD = "cors-wildcard-2026-10-22"
+DASHBOARD_API_BUILD = "staff-manager-2026-10-23"
+STAFF_ACCOUNT_DELETE_SECRET = os.getenv("STAFF_ACCOUNT_DELETE_SECRET", "").strip()
+STAFF_ROLE_NAMES = {"owner": "Owner", "co owner": "Co Owner", "admin": "Admin", "administrator": "Admin"}
 
 
 def setup_staff(bot, get_store, logger):
@@ -304,6 +307,175 @@ async def _audit(request, gid, user, action, detail):
     await store.set(gid, records[-500:])
 
 
+
+
+def _staff_guild(request):
+    bot = request.app["staff_bot"]
+    configured = os.getenv("GUILD_ID", "").strip()
+    if configured.isdigit():
+        return bot.get_guild(int(configured))
+    return next((g for g in bot.guilds if any(r.name.casefold() in {"owner", "co owner", "admin", "administrator"} for r in g.roles)), None)
+
+
+async def _staff_manager(request):
+    user, error = await _authorized(request)
+    if error:
+        return None, None, error
+    discord_id = str(user.get("discordId") or "")
+    if not discord_id.isdigit():
+        return None, None, _json(request, {"error": "Link your Discord account in Settings before using Staff Management."}, 403)
+    guild = _staff_guild(request)
+    if guild is None:
+        return None, None, _json(request, {"error": "The bot could not find the configured Cedar Cove server. Set GUILD_ID in the bot service environment."}, 503)
+    member = guild.get_member(int(discord_id))
+    if member is None:
+        try:
+            member = await guild.fetch_member(int(discord_id))
+        except discord.NotFound:
+            return None, None, _json(request, {"error": "Your linked Discord account is not a member of the staff server."}, 403)
+        except discord.HTTPException:
+            return None, None, _json(request, {"error": "Discord could not verify your server membership. Try again."}, 502)
+    roles = {r.name.casefold() for r in member.roles}
+    if not ({"owner", "co owner", "admin", "administrator"} & roles):
+        return None, None, _json(request, {"error": "Staff Management requires the actual Owner, Co Owner, or Admin role in Discord."}, 403)
+    return user, guild, None
+
+
+def _member_staff_roles(member):
+    return [r.name for r in sorted(member.roles, key=lambda role: role.position, reverse=True) if r.name.casefold() in {"owner", "co owner", "admin", "administrator", "mod", "moderator", "trial staff", "helper", "socials manager", "staff"}]
+
+
+def _loa_state(record, now=None):
+    now = int(now or time.time())
+    loa = record.get("loa")
+    if not isinstance(loa, dict) or not loa.get("active"):
+        return "none"
+    end = int(loa.get("endAt") or 0)
+    if end and end <= now:
+        return "expired"
+    if end and end - now <= 3 * 86400:
+        return "near_expiry"
+    return "on_leave"
+
+
+async def staff_list(request):
+    user, guild, error = await _staff_manager(request)
+    if error:
+        return error
+    records = await request.app["staff_management_store"].get(str(guild.id), {})
+    if not isinstance(records, dict):
+        records = {}
+    items = []
+    for member in sorted(guild.members, key=lambda m: m.display_name.casefold()):
+        roles = _member_staff_roles(member)
+        if not roles or member.bot:
+            continue
+        record = records.get(str(member.id), {})
+        loa_status = _loa_state(record)
+        items.append({"id": str(member.id), "username": member.name, "displayName": member.display_name, "avatar": member.display_avatar.url, "roles": roles, "warnings": len(record.get("warnings", [])), "strikes": len(record.get("strikes", [])), "suspended": bool(record.get("suspended")), "loaStatus": loa_status})
+    return _json(request, {"guild": guild.name, "items": items, "viewerRoles": _member_staff_roles(guild.get_member(int(user["discordId"]))) })
+
+
+async def staff_detail(request):
+    user, guild, error = await _staff_manager(request)
+    if error:
+        return error
+    member_id = request.match_info["member_id"]
+    if not member_id.isdigit():
+        return _json(request, {"error": "Invalid Discord member ID."}, 400)
+    try:
+        member = guild.get_member(int(member_id)) or await guild.fetch_member(int(member_id))
+    except discord.NotFound:
+        return _json(request, {"error": "Staff member is no longer in the server."}, 404)
+    record = await request.app["staff_management_store"].get(str(guild.id), {})
+    item = record.get(str(member.id), {}) if isinstance(record, dict) else {}
+    return _json(request, {"member": {"id": str(member.id), "username": member.name, "displayName": member.display_name, "roles": _member_staff_roles(member)}, "record": item, "loaStatus": _loa_state(item)})
+
+
+async def staff_action(request):
+    user, guild, error = await _staff_manager(request)
+    if error:
+        return error
+    member_id = request.match_info["member_id"]
+    if not member_id.isdigit():
+        return _json(request, {"error": "Invalid Discord member ID."}, 400)
+    try:
+        body = await request.json()
+    except Exception:
+        return _json(request, {"error": "Invalid JSON body."}, 400)
+    action = str(body.get("action") or "").strip().lower()
+    reason = str(body.get("reason") or "").strip()[:1000]
+    now = int(time.time())
+    store = request.app["staff_management_store"]
+    records = await store.get(str(guild.id), {})
+    if not isinstance(records, dict):
+        records = {}
+    record = records.setdefault(member_id, {"warnings": [], "strikes": [], "loa": None, "suspended": False})
+    actor = {"id": str(user.get("discordId")), "username": str(user.get("discordUsername") or user.get("username") or "Staff manager")[:100]}
+    if action in {"warn", "strike"}:
+        if not reason:
+            return _json(request, {"error": "Enter a reason for this action."}, 400)
+        key = "warnings" if action == "warn" else "strikes"
+        record.setdefault(key, []).append({"reason": reason, "by": actor, "at": now})
+    elif action == "loa_start":
+        days = body.get("days", 7)
+        try:
+            days = max(1, min(90, int(days)))
+        except (TypeError, ValueError):
+            days = 7
+        if not reason:
+            return _json(request, {"error": "Enter a reason for the leave of absence."}, 400)
+        record["loa"] = {"active": True, "reason": reason, "startAt": now, "endAt": now + days * 86400, "by": actor, "history": (record.get("loa") or {}).get("history", [])}
+        record["loa"].setdefault("history", []).append({"action": "started", "by": actor, "at": now, "endAt": now + days * 86400})
+    elif action == "loa_extend":
+        loa = record.get("loa")
+        if not isinstance(loa, dict) or not loa.get("active"):
+            return _json(request, {"error": "This staff member has no active leave of absence."}, 400)
+        try:
+            days = max(1, min(90, int(body.get("days", 7))))
+        except (TypeError, ValueError):
+            days = 7
+        loa["endAt"] = max(now, int(loa.get("endAt") or now)) + days * 86400
+        loa.setdefault("history", []).append({"action": "extended", "by": actor, "at": now, "endAt": loa["endAt"], "reason": reason})
+    elif action == "loa_end":
+        loa = record.get("loa")
+        if not isinstance(loa, dict) or not loa.get("active"):
+            return _json(request, {"error": "This staff member has no active leave of absence."}, 400)
+        loa["active"] = False
+        loa["endedAt"] = now
+        loa.setdefault("history", []).append({"action": "ended", "by": actor, "at": now, "reason": reason})
+    elif action == "suspend":
+        record["suspended"] = True
+        record["suspension"] = {"reason": reason, "by": actor, "at": now}
+    elif action == "unsuspend":
+        record["suspended"] = False
+        record["suspensionEndedAt"] = now
+    elif action == "delete_account":
+        if not STAFF_ACCOUNT_DELETE_SECRET:
+            return _json(request, {"error": "Account deletion is not configured yet. Set STAFF_ACCOUNT_DELETE_SECRET on both the bot and verification services."}, 503)
+        if str(member.id) == str(user.get("discordId")):
+            return _json(request, {"error": "You cannot delete your own dashboard account here."}, 400)
+        timeout = aiohttp.ClientTimeout(total=10)
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.post(AUTH_API_URL + "/api/internal/staff/delete-account", json={"discordId": str(member.id)}, headers={"X-Staff-Manager-Key": STAFF_ACCOUNT_DELETE_SECRET}) as resp:
+                    payload = await resp.json(content_type=None)
+                    if resp.status != 200:
+                        return _json(request, {"error": payload.get("error", "Account deletion failed.")}, resp.status)
+        except Exception:
+            request.app["staff_logger"].exception("Staff dashboard account deletion request failed")
+            return _json(request, {"error": "Could not reach the verification service."}, 502)
+        record.setdefault("accountActions", []).append({"action": "dashboard_account_deleted", "by": actor, "at": now})
+    else:
+        return _json(request, {"error": "Unknown staff action."}, 400)
+    record.setdefault("history", []).append({"action": action, "by": actor, "at": now, "reason": reason})
+    records[member_id] = record
+    await store.set(str(guild.id), records)
+    await _audit(request, str(guild.id), user, "staff_" + action, f"Staff member {member_id}: {reason or action}")
+    return _json(request, {"ok": True, "message": "Staff record updated.", "record": record})
+
+
+
 def register_staff_routes(app: web.Application):
     app["staff_logger"] = __import__("logging").getLogger("mega_bot.staff_dashboard")
     app["staff_logger"].info("Staff dashboard API build=%s; wildcard CORS enabled; DASHBOARD_ALLOWED_ORIGINS is not required.", DASHBOARD_API_BUILD)
@@ -327,8 +499,12 @@ def register_staff_routes(app: web.Application):
     app["staff_store"] = bot.staff_dashboard_store
     app["audit_store"] = bot.staff_dashboard_audit_store
     app["panels_store"] = bot.staff_dashboard_store_for_panels
+    app["staff_management_store"] = bot.staff_management_store
     app.router.add_route("OPTIONS", "/api/dashboard/{tail:.*}", options_handler)
     app.router.add_get("/api/dashboard/build", api_build)
+    app.router.add_get("/api/dashboard/staff", staff_list)
+    app.router.add_get("/api/dashboard/staff/{member_id}", staff_detail)
+    app.router.add_post("/api/dashboard/staff/{member_id}/action", staff_action)
     app.router.add_get("/api/dashboard/status", api_status)
     app.router.add_get("/api/dashboard/guilds", list_guilds)
     app.router.add_get("/api/dashboard/guilds/{guild_id}/channels", list_channels)
@@ -352,3 +528,4 @@ def setup_staff(bot, get_store, logger):
     _configured_bot = bot
     _original_setup_staff(bot, get_store, logger)
     bot.staff_dashboard_store_for_panels = get_store("panels")
+    bot.staff_management_store = get_store("staff_management_records")
