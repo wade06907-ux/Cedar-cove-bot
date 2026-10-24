@@ -231,13 +231,12 @@ async def publish_panel(request):
     embed = discord.Embed(title=title, description=description, color=discord.Color.blurple())
     embed.set_footer(text=guild.name, icon_url=guild.icon.url if guild.icon else None)
     try:
+        staff_bot = request.app["staff_bot"]
         if len(options) == 1:
-            view = discord.ui.View(timeout=None)
             button_label = str(panel.get("buttonLabel") or "Open Ticket")[:80]
-            view.add_item(discord.ui.Button(label=button_label, style=discord.ButtonStyle.blurple, custom_id="persistent:ticket_open_btn"))
+            view = staff_bot.ticket_open_view_cls(label=button_label)
         else:
-            view = discord.ui.View(timeout=None)
-            view.add_item(discord.ui.Select(placeholder="Select a ticket type...", custom_id="persistent:ticket_select_menu", options=[discord.SelectOption(label=o["label"], value=str(i)) for i, o in enumerate(options)]))
+            view = staff_bot.ticket_select_view_cls(options)
         msg = await channel.send(embed=embed, view=view)
         panel_record = {"title": title, "description": description, "channel_id": int(channel.id), "category_id": int(category.id) if category else None, "role_id": int(role.id) if role else None, "options": options, "message_id": msg.id, "guild_id": guild.id, "created_by_dashboard": True}
         await request.app["panels_store"].set(msg.id, panel_record)
