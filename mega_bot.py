@@ -3192,6 +3192,8 @@ class MegaBot(commands.Bot):
 
 
 bot = MegaBot()
+bot.ticket_open_view_cls = TicketOpenView
+bot.ticket_select_view_cls = TicketSelectView
 
 from staff_dashboard import setup_staff, register_staff_routes  # noqa: E402
 setup_staff(bot, get_store, logger)
