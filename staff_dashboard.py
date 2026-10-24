@@ -58,6 +58,8 @@ async def _authorized(request: web.Request):
                 if resp.status != 200:
                     return None, _json(request, {"error": "Your website session is invalid or expired."}, 401)
                 user = await resp.json(content_type=None)
+                if not bool(user.get("whitelisted", False)):
+                    return None, _json(request, {"error": "Your website account has not been approved for dashboard access."}, 403)
     except Exception as exc:
         request.app["staff_logger"].warning("Dashboard auth service unavailable: %s", exc)
         return None, _json(request, {"error": "Could not verify your login session."}, 502)
