@@ -18,7 +18,7 @@ import discord
 from aiohttp import web
 
 AUTH_API_URL = (os.getenv("AUTH_API_URL") or "https://verification-server-gjqt.onrender.com").rstrip("/")
-DASHBOARD_API_BUILD = "staff-manager-2026-10-23"
+DASHBOARD_API_BUILD = "staff-manager-2026-10-24"
 STAFF_ACCOUNT_DELETE_SECRET = os.getenv("STAFF_ACCOUNT_DELETE_SECRET", "").strip()
 STAFF_ROLE_NAMES = {"owner": "Owner", "co owner": "Co Owner", "admin": "Admin", "administrator": "Admin"}
 
@@ -330,7 +330,31 @@ async def _staff_manager(request):
     guild = _staff_guild(request)
     if guild is None:
         return None, None, _json(request, {"error": "The bot could not find the configured Cedar Cove server. Set GUILD_ID in the bot service environment."}, 503)
+    if not _can_manage_staff(user, guild):
+        return None, None, _json(request, {"error": "Staff Management is available only to Owner, Co Owner, and Admin roles."}, 403)
     return user, guild, None
+
+
+def _can_manage_staff(user, guild):
+    discord_id = str(user.get("discordId") or "").strip()
+    if not discord_id.isdigit():
+        return False
+    member = guild.get_member(int(discord_id))
+    if member is None:
+        return False
+    allowed = {"owner", "co owner", "admin", "administrator"}
+    return any(role.name.casefold() in allowed for role in member.roles)
+
+
+async def dashboard_access(request):
+    user, error = await _authorized(request)
+    if error:
+        return error
+    if not bool(user.get("whitelisted", False)):
+        return _json(request, {"staffManagement": False, "dashboardAccess": False})
+    guild = _staff_guild(request)
+    can_manage = bool(guild and _can_manage_staff(user, guild))
+    return _json(request, {"staffManagement": can_manage, "dashboardAccess": True})
 
 
 def _member_staff_roles(member):
@@ -525,6 +549,7 @@ def register_staff_routes(app: web.Application):
     app["staff_management_store"] = bot.staff_management_store
     app.router.add_route("OPTIONS", "/api/dashboard/{tail:.*}", options_handler)
     app.router.add_get("/api/dashboard/build", api_build)
+    app.router.add_get("/api/dashboard/access", dashboard_access)
     app.router.add_get("/api/dashboard/staff", staff_list)
     app.router.add_get("/api/dashboard/staff/{member_id}", staff_detail)
     app.router.add_post("/api/dashboard/staff/{member_id}/action", staff_action)
