@@ -530,11 +530,15 @@ async def staff_action(request):
             return _json(request, {"error": "This staff member is already suspended."}, 400)
         normalize_role = lambda value: re.sub(r"[^a-z0-9]+", " ", value.casefold()).strip()
         staff_role_ids = [str(role.id) for role in member.roles if normalize_role(role.name) in {"owner", "co owner", "coowner", "admin", "administrator", "mod", "moderator", "trial staff", "helper", "socials manager", "staff"}]
-        member_role = discord.utils.find(lambda role: normalize_role(role.name) == "member", guild.roles)
+        normalized_roles = [(role, normalize_role(role.name)) for role in guild.roles]
+        member_role = next((role for role, name in normalized_roles if name == "member"), None)
+        if member_role is None:
+            member_role = next((role for role, name in normalized_roles if name in {"members", "server member", "server members"} or name.startswith("member ")), None)
         if not staff_role_ids:
             return _json(request, {"error": "No recognized staff roles were found to remove."}, 400)
         if member_role is None:
-            return _json(request, {"error": "Create a Discord role named Member first, then try again."}, 400)
+            visible_roles = [role.name for role in guild.roles if "member" in normalize_role(role.name)]
+            return _json(request, {"error": f"The bot cannot find a Member role in the selected server '{guild.name}'. Roles containing 'member' visible to the bot: {', '.join(visible_roles) if visible_roles else 'none'}. Check GUILD_ID and make sure the bot is in the server that contains your Member role."}, 400)
         if not guild.me.guild_permissions.manage_roles:
             return _json(request, {"error": "The bot needs the Manage Roles permission."}, 403)
         if member_role >= guild.me.top_role or any((guild.get_role(int(role_id)) and guild.get_role(int(role_id)) >= guild.me.top_role) for role_id in staff_role_ids):
