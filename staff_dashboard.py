@@ -27,6 +27,9 @@ def setup_staff(bot, get_store, logger):
     bot.staff_dashboard_store = get_store("staff_dashboard_configs")
     bot.staff_dashboard_audit_store = get_store("staff_dashboard_audit")
     bot.role_nicknames_store = get_store("role_nicknames")
+    if not getattr(bot, "_role_nickname_listener_added", False):
+        bot.add_listener(_role_nickname_member_update, "on_member_update")
+        bot._role_nickname_listener_added = True
     bot.staff_dashboard_logger = logger
 
 
@@ -289,6 +292,39 @@ async def send_module_message(request):
         return _json(request, {"error": f"Discord could not send the message (HTTP {exc.status})."}, 502)
 
 
+async def _apply_role_nickname(member, rules):
+    if member.bot:
+        return False
+    current = member.nick or member.name
+    base = current
+    for rule in rules:
+        prefix, suffix = str(rule.get("prefix") or ""), str(rule.get("suffix") or "")
+        if prefix and base.startswith(prefix):
+            base = base[len(prefix):]
+        if suffix and base.endswith(suffix):
+            base = base[:-len(suffix)]
+    match = next((rule for rule in rules if str(rule.get("roleId", "")).isdigit() and any(str(role.id) == str(rule["roleId"]) for role in member.roles)), None)
+    desired = ((str(match.get("prefix") or "") + base + str(match.get("suffix") or ""))[:32]) if match else base
+    if desired == member.nick:
+        return False
+    try:
+        await member.edit(nick=desired, reason="Cedar Cove role nickname rule")
+        return True
+    except (discord.Forbidden, discord.HTTPException):
+        return False
+
+
+async def _role_nickname_member_update(before, after):
+    if before.guild is None:
+        return
+    store = getattr(_configured_bot, "role_nicknames_store", None)
+    if store is None:
+        return
+    rules = await store.get(str(after.guild.id), [])
+    if isinstance(rules, list):
+        await _apply_role_nickname(after, rules)
+
+
 async def get_role_nicknames(request):
     user, error = await _authorized(request)
     if error:
@@ -331,8 +367,12 @@ async def save_role_nicknames(request):
             return _json(request, {"error": "Each rule needs a prefix, suffix, or both."}, 400)
         rules.append({"roleId": role_id, "roleName": role.name, "prefix": prefix, "suffix": suffix})
     await request.app["role_nicknames_store"].set(gid, rules)
-    await _audit(request, gid, user, "save_role_nicknames", f"Saved {len(rules)} role nickname rules")
-    return _json(request, {"ok": True, "rules": rules})
+    updated = 0
+    for member in list(guild.members):
+        if await _apply_role_nickname(member, rules):
+            updated += 1
+    await _audit(request, gid, user, "save_role_nicknames", f"Saved {len(rules)} rules; updated {updated} members")
+    return _json(request, {"ok": True, "rules": rules, "updatedMembers": updated})
 
 
 async def list_audit(request):
