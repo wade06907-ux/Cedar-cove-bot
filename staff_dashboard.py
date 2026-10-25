@@ -433,11 +433,12 @@ async def staff_list(request):
     items = []
     for member in sorted(guild.members, key=lambda m: m.display_name.casefold()):
         roles = _member_staff_roles(member)
-        if not roles or member.bot:
-            continue
         record = records.get(str(member.id), {})
+        suspended = bool(record.get("suspended"))
+        if (not roles and not suspended) or member.bot:
+            continue
         loa_status = _loa_state(record)
-        items.append({"id": str(member.id), "username": member.name, "displayName": member.display_name, "avatar": member.display_avatar.url, "roles": roles, "warnings": len(record.get("warnings", [])), "strikes": len(record.get("strikes", [])), "suspended": bool(record.get("suspended")), "loaStatus": loa_status})
+        items.append({"id": str(member.id), "username": member.name, "displayName": member.display_name, "avatar": member.display_avatar.url, "roles": roles or ["Member (suspended)"], "warnings": len(record.get("warnings", [])), "strikes": len(record.get("strikes", [])), "suspended": suspended, "loaStatus": loa_status})
     return _json(request, {"guild": guild.name, "items": items, "viewerRoles": ["Dashboard Authorized"]})
 
 
@@ -455,10 +456,10 @@ async def staff_detail(request):
     except discord.HTTPException:
         return _json(request, {"error": "Discord could not load this member. Try again."}, 502)
     roles = _member_staff_roles(member)
-    if member.bot or not roles:
-        return _json(request, {"error": "Only human staff members can be managed here."}, 403)
     record = await request.app["staff_management_store"].get(str(guild.id), {})
     item = record.get(str(member.id), {}) if isinstance(record, dict) else {}
+    if member.bot or (not roles and not item.get("suspended")):
+        return _json(request, {"error": "Only current or suspended human staff members can be managed here."}, 403)
     return _json(request, {"member": {"id": str(member.id), "username": member.name, "displayName": member.display_name, "roles": _member_staff_roles(member)}, "record": item, "loaStatus": _loa_state(item)})
 
 
@@ -475,8 +476,10 @@ async def staff_action(request):
         return _json(request, {"error": "Staff member is no longer in the server."}, 404)
     except discord.HTTPException:
         return _json(request, {"error": "Discord could not load this member. Try again."}, 502)
-    if member.bot or not _member_staff_roles(member):
-        return _json(request, {"error": "Only human staff members can be managed here."}, 403)
+    existing_records = await request.app["staff_management_store"].get(str(guild.id), {})
+    existing_record = existing_records.get(member_id, {}) if isinstance(existing_records, dict) else {}
+    if member.bot or (not _member_staff_roles(member) and not existing_record.get("suspended")):
+        return _json(request, {"error": "Only current or suspended human staff members can be managed here."}, 403)
     try:
         body = await request.json()
     except Exception:
@@ -523,9 +526,50 @@ async def staff_action(request):
         loa["endedAt"] = now
         loa.setdefault("history", []).append({"action": "ended", "by": actor, "at": now, "reason": reason})
     elif action == "suspend":
+        if record.get("suspended"):
+            return _json(request, {"error": "This staff member is already suspended."}, 400)
+        normalize_role = lambda value: re.sub(r"[^a-z0-9]+", " ", value.casefold()).strip()
+        staff_role_ids = [str(role.id) for role in member.roles if normalize_role(role.name) in {"owner", "co owner", "coowner", "admin", "administrator", "mod", "moderator", "trial staff", "helper", "socials manager", "staff"}]
+        member_role = discord.utils.find(lambda role: normalize_role(role.name) == "member", guild.roles)
+        if not staff_role_ids:
+            return _json(request, {"error": "No recognized staff roles were found to remove."}, 400)
+        if member_role is None:
+            return _json(request, {"error": "Create a Discord role named Member first, then try again."}, 400)
+        if not guild.me.guild_permissions.manage_roles:
+            return _json(request, {"error": "The bot needs the Manage Roles permission."}, 403)
+        if member_role >= guild.me.top_role or any((guild.get_role(int(role_id)) and guild.get_role(int(role_id)) >= guild.me.top_role) for role_id in staff_role_ids):
+            return _json(request, {"error": "The bot's highest role must be above the Member role and every staff role it needs to change."}, 403)
+        try:
+            await member.remove_roles(*(guild.get_role(int(role_id)) for role_id in staff_role_ids if guild.get_role(int(role_id))), reason=f"Staff suspended by {actor['username']}: {reason or 'No reason provided'}")
+            added_member_role = member_role not in member.roles
+            if added_member_role:
+                await member.add_roles(member_role, reason=f"Staff suspended by {actor['username']}")
+        except discord.Forbidden:
+            return _json(request, {"error": "The bot cannot change one or more roles. Check Manage Roles and role hierarchy."}, 403)
+        except discord.HTTPException:
+            return _json(request, {"error": "Discord could not update this member's roles. Try again."}, 502)
         record["suspended"] = True
-        record["suspension"] = {"reason": reason, "by": actor, "at": now}
+        record["suspensionAddedMemberRole"] = added_member_role
+        record["suspension"] = {"reason": reason, "by": actor, "at": now, "removedRoleIds": staff_role_ids, "memberRoleId": str(member_role.id)}
     elif action == "unsuspend":
+        if not record.get("suspended"):
+            return _json(request, {"error": "This staff member is not suspended."}, 400)
+        suspension = record.get("suspension") or {}
+        restore_roles = [guild.get_role(int(role_id)) for role_id in suspension.get("removedRoleIds", []) if str(role_id).isdigit() and guild.get_role(int(role_id))]
+        member_role_id = str(suspension.get("memberRoleId") or "")
+        member_role = guild.get_role(int(member_role_id)) if member_role_id.isdigit() else None
+        if not guild.me.guild_permissions.manage_roles:
+            return _json(request, {"error": "The bot needs the Manage Roles permission."}, 403)
+        try:
+            if record.get("suspensionAddedMemberRole") and member_role and member_role in member.roles:
+                await member.remove_roles(member_role, reason=f"Staff suspension ended by {actor['username']}")
+            roles_to_restore = [role for role in restore_roles if role not in member.roles]
+            if roles_to_restore:
+                await member.add_roles(*roles_to_restore, reason=f"Staff suspension ended by {actor['username']}")
+        except discord.Forbidden:
+            return _json(request, {"error": "The bot cannot restore one or more roles. Check Manage Roles and role hierarchy."}, 403)
+        except discord.HTTPException:
+            return _json(request, {"error": "Discord could not restore this member's roles. Try again."}, 502)
         record["suspended"] = False
         record["suspensionEndedAt"] = now
     elif action in {"grant_dashboard_access", "revoke_dashboard_access"}:
