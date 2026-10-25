@@ -341,11 +341,24 @@ def _can_manage_staff(user, guild):
     discord_id = str(user.get("discordId") or "").strip()
     if not discord_id.isdigit():
         return False
+
+    # The actual Discord server owner must always qualify, even without an
+    # explicitly assigned role named "Owner".
+    if str(getattr(guild, "owner_id", "")) == discord_id:
+        return True
+
     member = guild.get_member(int(discord_id))
     if member is None:
         return False
-    allowed = {"owner", "co owner", "admin", "administrator"}
-    return any(role.name.casefold() in allowed for role in member.roles)
+
+    # Normalize emoji and decorative characters so roles such as "👑 Owner"
+    # and "Co-Owner" still match the intended permission names.
+    allowed = {"owner", "co owner", "coowner", "admin", "administrator"}
+    for role in member.roles:
+        normalized = re.sub(r"[^a-z0-9]+", " ", role.name.casefold()).strip()
+        if normalized in allowed:
+            return True
+    return False
 
 
 async def dashboard_access(request):
