@@ -26,6 +26,7 @@ STAFF_ROLE_NAMES = {"owner": "Owner", "co owner": "Co Owner", "admin": "Admin", 
 def setup_staff(bot, get_store, logger):
     bot.staff_dashboard_store = get_store("staff_dashboard_configs")
     bot.staff_dashboard_audit_store = get_store("staff_dashboard_audit")
+    bot.role_nicknames_store = get_store("role_nicknames")
     bot.staff_dashboard_logger = logger
 
 
@@ -286,6 +287,52 @@ async def send_module_message(request):
         return _json(request, {"error": "The bot cannot send messages in that channel."}, 403)
     except discord.HTTPException as exc:
         return _json(request, {"error": f"Discord could not send the message (HTTP {exc.status})."}, 502)
+
+
+async def get_role_nicknames(request):
+    user, error = await _authorized(request)
+    if error:
+        return error
+    gid = request.match_info["guild_id"]
+    if not gid.isdigit() or request.app["staff_bot"].get_guild(int(gid)) is None:
+        return _json(request, {"error": "The bot is not in that Discord server."}, 404)
+    rules = await request.app["role_nicknames_store"].get(gid, [])
+    return _json(request, {"guildId": gid, "rules": rules if isinstance(rules, list) else []})
+
+
+async def save_role_nicknames(request):
+    user, error = await _authorized(request)
+    if error:
+        return error
+    gid = request.match_info["guild_id"]
+    guild = request.app["staff_bot"].get_guild(int(gid)) if gid.isdigit() else None
+    if guild is None:
+        return _json(request, {"error": "The bot is not in that Discord server."}, 404)
+    try:
+        body = await request.json()
+    except Exception:
+        return _json(request, {"error": "Invalid JSON body."}, 400)
+    incoming = body.get("rules")
+    if not isinstance(incoming, list) or len(incoming) > 100:
+        return _json(request, {"error": "Rules must be a list of up to 100 items."}, 400)
+    rules, seen = [], set()
+    for item in incoming:
+        if not isinstance(item, dict):
+            continue
+        role_id = str(item.get("roleId") or "")
+        role = guild.get_role(int(role_id)) if role_id.isdigit() else None
+        if role is None or role.is_default():
+            return _json(request, {"error": "Choose a valid role from this server."}, 400)
+        if role_id in seen:
+            return _json(request, {"error": "Each role can have only one nickname rule."}, 400)
+        seen.add(role_id)
+        prefix, suffix = str(item.get("prefix") or "")[:20], str(item.get("suffix") or "")[:20]
+        if not prefix and not suffix:
+            return _json(request, {"error": "Each rule needs a prefix, suffix, or both."}, 400)
+        rules.append({"roleId": role_id, "roleName": role.name, "prefix": prefix, "suffix": suffix})
+    await request.app["role_nicknames_store"].set(gid, rules)
+    await _audit(request, gid, user, "save_role_nicknames", f"Saved {len(rules)} role nickname rules")
+    return _json(request, {"ok": True, "rules": rules})
 
 
 async def list_audit(request):
@@ -662,6 +709,8 @@ def register_staff_routes(app: web.Application):
     app.router.add_post("/api/dashboard/publish-panel", publish_panel)
     app.router.add_post("/api/dashboard/send-message", send_module_message)
     app.router.add_get("/api/dashboard/guilds/{guild_id}/audit", list_audit)
+    app.router.add_get("/api/dashboard/guilds/{guild_id}/role-nicknames", get_role_nicknames)
+    app.router.add_put("/api/dashboard/guilds/{guild_id}/role-nicknames", save_role_nicknames)
 
 
 _configured_bot = None
