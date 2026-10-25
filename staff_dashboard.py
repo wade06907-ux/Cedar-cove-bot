@@ -7,6 +7,7 @@ CORS uses wildcard origins without browser cookies; API calls require a valid
 bearer session token verified by the verification service.
 """
 import os
+import asyncio
 import re
 import time
 import secrets
@@ -18,7 +19,7 @@ import discord
 from aiohttp import web
 
 AUTH_API_URL = (os.getenv("AUTH_API_URL") or "https://verification-server-gjqt.onrender.com").rstrip("/")
-DASHBOARD_API_BUILD = "staff-manager-2026-10-24"
+DASHBOARD_API_BUILD = "staff-manager-2026-10-25-role-nickname-sync"
 STAFF_ACCOUNT_DELETE_SECRET = os.getenv("STAFF_ACCOUNT_DELETE_SECRET", "").strip()
 STAFF_ROLE_NAMES = {"owner": "Owner", "co owner": "Co Owner", "admin": "Admin", "administrator": "Admin"}
 
@@ -30,6 +31,8 @@ def setup_staff(bot, get_store, logger):
     if not getattr(bot, "_role_nickname_listener_added", False):
         bot.add_listener(_role_nickname_member_update, "on_member_update")
         bot._role_nickname_listener_added = True
+    if not getattr(bot, "_role_nickname_sync_task", None):
+        bot._role_nickname_sync_task = bot.loop.create_task(_role_nickname_sync_loop(bot))
     bot.staff_dashboard_logger = logger
 
 
@@ -323,6 +326,25 @@ async def _role_nickname_member_update(before, after):
     rules = await store.get(str(after.guild.id), [])
     if isinstance(rules, list):
         await _apply_role_nickname(after, rules)
+
+
+async def _role_nickname_sync_loop(bot):
+    await bot.wait_until_ready()
+    while not bot.is_closed():
+        store = getattr(bot, "role_nicknames_store", None)
+        if store is not None:
+            for guild in list(bot.guilds):
+                try:
+                    rules = await store.get(str(guild.id), [])
+                    if not isinstance(rules, list) or not rules:
+                        continue
+                    for member in list(guild.members):
+                        await _apply_role_nickname(member, rules)
+                except Exception as exc:
+                    logger = getattr(bot, "staff_dashboard_logger", None)
+                    if logger:
+                        logger.warning("Role nickname sync failed for guild %s: %s", guild.id, exc)
+        await asyncio.sleep(300)
 
 
 async def get_role_nicknames(request):
