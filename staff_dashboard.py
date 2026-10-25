@@ -388,11 +388,32 @@ async def save_role_nicknames(request):
         if not prefix and not suffix:
             return _json(request, {"error": "Each rule needs a prefix, suffix, or both."}, 400)
         rules.append({"roleId": role_id, "roleName": role.name, "prefix": prefix, "suffix": suffix})
-    await request.app["role_nicknames_store"].set(gid, rules)
+    store = request.app["role_nicknames_store"]
+    previous_rules = await store.get(gid, [])
+    if not isinstance(previous_rules, list):
+        previous_rules = []
+    await store.set(gid, rules)
     updated = 0
     for member in list(guild.members):
-        if await _apply_role_nickname(member, rules):
-            updated += 1
+        if member.bot:
+            continue
+        current = member.nick or member.name
+        base = current
+        for old_rule in previous_rules:
+            old_prefix = str(old_rule.get("prefix") or "")
+            old_suffix = str(old_rule.get("suffix") or "")
+            if old_prefix and base.startswith(old_prefix):
+                base = base[len(old_prefix):]
+            if old_suffix and base.endswith(old_suffix):
+                base = base[:-len(old_suffix)]
+        match = next((rule for rule in rules if any(str(role.id) == str(rule["roleId"]) for role in member.roles)), None)
+        desired = ((str(match.get("prefix") or "") + base + str(match.get("suffix") or ""))[:32]) if match else base
+        if desired != member.nick:
+            try:
+                await member.edit(nick=desired, reason="Cedar Cove role nickname rule sync")
+                updated += 1
+            except (discord.Forbidden, discord.HTTPException):
+                pass
     await _audit(request, gid, user, "save_role_nicknames", f"Saved {len(rules)} rules; updated {updated} members")
     return _json(request, {"ok": True, "rules": rules, "updatedMembers": updated})
 
