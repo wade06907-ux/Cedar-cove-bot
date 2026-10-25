@@ -19,7 +19,7 @@ import discord
 from aiohttp import web
 
 AUTH_API_URL = (os.getenv("AUTH_API_URL") or "https://verification-server-gjqt.onrender.com").rstrip("/")
-DASHBOARD_API_BUILD = "staff-manager-2026-10-25-role-nickname-sync"
+DASHBOARD_API_BUILD = "staff-manager-2026-10-25-role-nickname-sync-fix"
 STAFF_ACCOUNT_DELETE_SECRET = os.getenv("STAFF_ACCOUNT_DELETE_SECRET", "").strip()
 STAFF_ROLE_NAMES = {"owner": "Owner", "co owner": "Co Owner", "admin": "Admin", "administrator": "Admin"}
 
@@ -31,8 +31,6 @@ def setup_staff(bot, get_store, logger):
     if not getattr(bot, "_role_nickname_listener_added", False):
         bot.add_listener(_role_nickname_member_update, "on_member_update")
         bot._role_nickname_listener_added = True
-    if not getattr(bot, "_role_nickname_sync_task", None):
-        bot._role_nickname_sync_task = bot.loop.create_task(_role_nickname_sync_loop(bot))
     bot.staff_dashboard_logger = logger
 
 
@@ -805,5 +803,7 @@ def setup_staff(bot, get_store, logger):
     global _configured_bot
     _configured_bot = bot
     _original_setup_staff(bot, get_store, logger)
+    if not getattr(bot, "_role_nickname_sync_task", None):
+        bot._role_nickname_sync_task = asyncio.create_task(_role_nickname_sync_loop(bot))
     bot.staff_dashboard_store_for_panels = get_store("panels")
     bot.staff_management_store = get_store("staff_management_records")
