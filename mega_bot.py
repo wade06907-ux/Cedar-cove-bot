@@ -3139,6 +3139,11 @@ class MegaBot(commands.Bot):
         self._health_runner: Optional[web.AppRunner] = None
 
     async def setup_hook(self):
+        # Start periodic role nickname syncing only after Discord's event loop is running.
+        if not getattr(self, "_role_nickname_sync_task", None):
+            from staff_dashboard import _role_nickname_sync_loop
+            self._role_nickname_sync_task = asyncio.create_task(_role_nickname_sync_loop(self))
+
         # Role Connections storage needs an explicit connect step (it pings
         # MongoDB to decide whether to use it or fall back to JSON).
         try:
