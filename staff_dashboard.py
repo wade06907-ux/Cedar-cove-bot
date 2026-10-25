@@ -310,12 +310,42 @@ async def _audit(request, gid, user, action, detail):
 
 
 
-def _staff_guild(request):
+def _staff_guild(request, user=None):
     bot = request.app["staff_bot"]
     configured = os.getenv("GUILD_ID", "").strip()
     if configured.isdigit():
         return bot.get_guild(int(configured))
-    return next((g for g in bot.guilds if any(r.name.casefold() in {"owner", "co owner", "admin", "administrator"} for r in g.roles)), None)
+
+    # Without GUILD_ID, prefer the server the signed-in Discord account owns
+    # or can manage, rather than relying only on role names existing server-wide.
+    discord_id = str((user or {}).get("discordId") or "").strip()
+    if discord_id.isdigit():
+        for guild in bot.guilds:
+            if str(getattr(guild, "owner_id", "")) == discord_id:
+                return guild
+            member = guild.get_member(int(discord_id))
+            if member and _member_can_manage_staff(member):
+                return guild
+
+    allowed = {"owner", "co owner", "coowner", "admin", "administrator"}
+    return next(
+        (
+            guild for guild in bot.guilds
+            if any(
+                re.sub(r"[^a-z0-9]+", " ", role.name.casefold()).strip() in allowed
+                for role in guild.roles
+            )
+        ),
+        None,
+    )
+
+
+def _member_can_manage_staff(member):
+    allowed = {"owner", "co owner", "coowner", "admin", "administrator"}
+    return any(
+        re.sub(r"[^a-z0-9]+", " ", role.name.casefold()).strip() in allowed
+        for role in member.roles
+    )
 
 
 async def _staff_manager(request):
@@ -329,7 +359,7 @@ async def _staff_manager(request):
             "error": "Your website account has not been approved for dashboard access."
         }, 403)
 
-    guild = _staff_guild(request)
+    guild = _staff_guild(request, user)
     if guild is None:
         return None, None, _json(request, {"error": "The bot could not find the configured Cedar Cove server. Set GUILD_ID in the bot service environment."}, 503)
     if not _can_manage_staff(user, guild):
