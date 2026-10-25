@@ -803,7 +803,5 @@ def setup_staff(bot, get_store, logger):
     global _configured_bot
     _configured_bot = bot
     _original_setup_staff(bot, get_store, logger)
-    if not getattr(bot, "_role_nickname_sync_task", None):
-        bot._role_nickname_sync_task = asyncio.create_task(_role_nickname_sync_loop(bot))
     bot.staff_dashboard_store_for_panels = get_store("panels")
     bot.staff_management_store = get_store("staff_management_records")
