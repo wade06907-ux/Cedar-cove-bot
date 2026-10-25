@@ -731,6 +731,7 @@ def register_staff_routes(app: web.Application):
     app["audit_store"] = bot.staff_dashboard_audit_store
     app["panels_store"] = bot.staff_dashboard_store_for_panels
     app["staff_management_store"] = bot.staff_management_store
+    app["role_nicknames_store"] = bot.role_nicknames_store
     app.router.add_route("OPTIONS", "/api/dashboard/{tail:.*}", options_handler)
     app.router.add_get("/api/dashboard/build", api_build)
     app.router.add_get("/api/dashboard/access", dashboard_access)
