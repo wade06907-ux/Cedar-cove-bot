@@ -226,19 +226,21 @@ async def publish_panel(request):
     if not perms or not (perms.send_messages and perms.embed_links):
         return _json(request, {"error": "The bot needs Send Messages and Embed Links in the selected channel."}, 403)
     category_id = panel.get("categoryId")
-    role_id = panel.get("supportRoleId")
+    role_ids = panel.get("supportRoleIds") or ([panel.get("supportRoleId")] if panel.get("supportRoleId") else [])
+    role_ids = [int(value) for value in role_ids if str(value or "").isdigit()]
     category = guild.get_channel(int(category_id)) if str(category_id or "").isdigit() else None
-    role = guild.get_role(int(role_id)) if str(role_id or "").isdigit() else None
+    roles = [guild.get_role(role_id) for role_id in role_ids]
+    roles = [role for role in roles if role is not None]
     if category_id and not isinstance(category, discord.CategoryChannel):
         return _json(request, {"error": "Choose a valid ticket category from this server."}, 400)
-    if role_id and role is None:
-        return _json(request, {"error": "Choose a valid support role from this server."}, 400)
+    if len(roles) != len(role_ids):
+        return _json(request, {"error": "One or more selected help roles are invalid for this server."}, 400)
     title = str(panel.get("title") or "How can we help?")[:256]
     description = str(panel.get("message") or "Choose an option below and our staff team will help you.")[:4000]
     types = [x.strip()[:80] for x in str(panel.get("types") or "General Support").splitlines() if x.strip()][:25]
     if not types:
         types = ["General Support"]
-    options = [{"label": x, "description": None, "emoji": None, "ticket_message": None, "category_id": int(category.id) if category else None, "role_id": int(role.id) if role else None} for x in types]
+    options = [{"label": x, "description": None, "emoji": None, "ticket_message": None, "category_id": int(category.id) if category else None, "role_id": int(roles[0].id) if roles else None, "role_ids": [int(role.id) for role in roles]} for x in types]
     embed = discord.Embed(title=title, description=description, color=discord.Color.blurple())
     embed.set_footer(text=guild.name, icon_url=guild.icon.url if guild.icon else None)
     try:
