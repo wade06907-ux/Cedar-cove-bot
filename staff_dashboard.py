@@ -440,13 +440,19 @@ async def save_role_nicknames(request):
         if not prefix and not suffix:
             return _json(request, {"error": "Each rule needs a prefix, suffix, or both."}, 400)
         rules.append({"roleId": role_id, "roleName": role.name, "prefix": prefix, "suffix": suffix})
+    if not guild.me.guild_permissions.manage_nicknames:
+        return _json(request, {"error": "The bot needs Manage Nicknames permission to apply role nickname rules."}, 403)
     store = request.app["role_nicknames_store"]
     previous_rules = await store.get(gid, [])
     if not isinstance(previous_rules, list):
         previous_rules = []
     await store.set(gid, rules)
     updated = 0
-    for member in list(guild.members):
+    try:
+        members = [member async for member in guild.fetch_members(limit=None)]
+    except discord.HTTPException:
+        members = list(guild.members)
+    for member in members:
         if member.bot:
             continue
         current = member.nick or member.name
