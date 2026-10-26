@@ -50,6 +50,9 @@ def setup_staff(bot, get_store, logger):
         if not getattr(bot, marker, False):
             bot.add_listener(listener, event_name)
             setattr(bot, marker, True)
+    if not getattr(bot, '_verification_refresh_task_started', False):
+        bot.loop.create_task(_verification_refresh_loop(bot))
+        bot._verification_refresh_task_started = True
 
 
 
@@ -128,6 +131,38 @@ async def _dashboard_log_member_unban(guild, user):
 async def _dashboard_log_member_update(before, after):
     if before.guild and before.nick != after.nick: await _log_event(after.guild, 'nicknameUpdate', 'Nickname changed', '{}: {} -> {}'.format(after, before.nick or before.name, after.nick or after.name))
     if before.guild and {r.id for r in before.roles} != {r.id for r in after.roles}: await _log_event(after.guild, 'memberRoleUpdate', 'Member roles changed', '{} ({})'.format(after, after.id))
+
+async def _verification_refresh_loop(bot):
+    await bot.wait_until_ready()
+    while not bot.is_closed():
+        for guild in list(bot.guilds):
+            try:
+                module = await _dashboard_module(bot, guild.id, 'verification')
+                if not module.get('enabled') or not module.get('refresh'): continue
+                channel_id = str(module.get('channelId') or '')
+                channel = guild.get_channel(int(channel_id)) if channel_id.isdigit() else None
+                if not isinstance(channel, discord.TextChannel): continue
+                content = str(module.get('message') or 'Read the rules and complete verification to access Cedar Cove.')[:1800]
+                message_id = str(module.get('messageId') or '')
+                try:
+                    if message_id.isdigit():
+                        old = await channel.fetch_message(int(message_id))
+                        if old.author.id == bot.user.id:
+                            if old.content != content: await old.edit(content=content, allowed_mentions=discord.AllowedMentions.none())
+                            continue
+                    sent = await channel.send(content, allowed_mentions=discord.AllowedMentions.none())
+                    module['messageId'] = str(sent.id)
+                    store = getattr(bot, 'staff_dashboard_store', None)
+                    if store is not None:
+                        config = await store.get(str(guild.id), {})
+                        config.setdefault('modules', {})['verification'] = module
+                        await store.set(str(guild.id), config)
+                except (discord.Forbidden, discord.NotFound, discord.HTTPException): pass
+            except Exception as exc:
+                log = getattr(bot, 'staff_dashboard_logger', None)
+                if log: log.warning('Verification refresh failed for guild %s: %s', guild.id, exc)
+        await asyncio.sleep(300)
+
 async def get_honeypot_stats(request):
     user, error = await _authorized(request)
     if error: return error
