@@ -512,9 +512,9 @@ def ticket_setup_admin_check():
 def _is_support(member: discord.Member, role_id) -> bool:
     if member.guild_permissions.administrator:
         return True
-    if role_id and any(r.id == role_id for r in member.roles):
-        return True
-    return False
+    role_ids = role_id if isinstance(role_id, (list, tuple, set)) else [role_id]
+    valid_ids = {int(value) for value in role_ids if str(value or "").isdigit()}
+    return any(role.id in valid_ids for role in member.roles)
 
 
 # ---------------------------------------------------------------------------
@@ -1570,8 +1570,10 @@ async def open_ticket_for(interaction: discord.Interaction, panel: dict, option:
 
         category_id = option.get("category_id") or panel.get("category_id")
         category = guild.get_channel(category_id) if category_id else None
-        role_id = option.get("role_id") or panel.get("role_id")
-        role = guild.get_role(role_id) if role_id else None
+        role_ids = option.get("role_ids") or panel.get("role_ids") or ([option.get("role_id") or panel.get("role_id")] if (option.get("role_id") or panel.get("role_id")) else [])
+        roles = [guild.get_role(int(value)) for value in role_ids if str(value or "").isdigit()]
+        roles = [role for role in roles if role is not None]
+        role = roles[0] if roles else None
 
         number = await next_ticket_number(guild.id)
         option_label = option.get("label", "General")
@@ -1582,8 +1584,8 @@ async def open_ticket_for(interaction: discord.Interaction, panel: dict, option:
             user: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True),
             guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_channels=True),
         }
-        if role:
-            overwrites[role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
+        for support_role in roles:
+            overwrites[support_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
 
         try:
             channel = await guild.create_text_channel(
@@ -1621,7 +1623,7 @@ async def open_ticket_for(interaction: discord.Interaction, panel: dict, option:
         )
 
         msg = await channel.send(
-            content=role.mention if role else None,
+            content=" ".join(support_role.mention for support_role in roles) if roles else None,
             embed=embed,
             view=TicketControlView(),
         )
@@ -1634,6 +1636,7 @@ async def open_ticket_for(interaction: discord.Interaction, panel: dict, option:
             "panel_message_id": panel.get("message_id"),
             "option_label": option_label,
             "role_id": role.id if role else None,
+            "role_ids": [support_role.id for support_role in roles],
             "message_id": msg.id,
             "number": number,
         })
