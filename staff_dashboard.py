@@ -19,7 +19,7 @@ import discord
 from aiohttp import web
 
 AUTH_API_URL = (os.getenv("AUTH_API_URL") or "https://verification-server-gjqt.onrender.com").rstrip("/")
-DASHBOARD_API_BUILD = "staff-manager-2026-10-25-role-nickname-sync-fix"
+DASHBOARD_API_BUILD = "staff-manager-2026-10-25-welcome-leave-custom-message"
 STAFF_ACCOUNT_DELETE_SECRET = os.getenv("STAFF_ACCOUNT_DELETE_SECRET", "").strip()
 STAFF_ROLE_NAMES = {"owner": "Owner", "co owner": "Co Owner", "admin": "Admin", "administrator": "Admin"}
 
@@ -31,6 +31,10 @@ def setup_staff(bot, get_store, logger):
     if not getattr(bot, "_role_nickname_listener_added", False):
         bot.add_listener(_role_nickname_member_update, "on_member_update")
         bot._role_nickname_listener_added = True
+    if not getattr(bot, "_welcome_leave_listeners_added", False):
+        bot.add_listener(_welcome_leave_member_join, "on_member_join")
+        bot.add_listener(_welcome_leave_member_remove, "on_member_remove")
+        bot._welcome_leave_listeners_added = True
     bot.staff_dashboard_logger = logger
 
 
@@ -271,9 +275,13 @@ async def send_module_message(request):
         return _json(request, {"error": "The bot is not in that server."}, 404)
     config = await request.app["staff_store"].get(gid, {})
     module = config.get("modules", {}).get(module_name, {})
-    if not module or not module.get("enabled"):
-        return _json(request, {"error": "Enable and save this module before sending a message."}, 400)
-    channel_id = module.get("channelId") or module.get("logChannelId")
+    if module_name == "custom_message":
+        channel_id = str(body.get("channelId") or "")
+        module = {"enabled": True}
+    else:
+        if not module or not module.get("enabled"):
+            return _json(request, {"error": "Enable and save this module before sending a message."}, 400)
+        channel_id = module.get("channelId") or module.get("logChannelId")
     if not str(channel_id or "").isdigit():
         return _json(request, {"error": "Choose and save a destination channel first."}, 400)
     channel = guild.get_channel(int(channel_id))
@@ -313,6 +321,52 @@ async def _apply_role_nickname(member, rules):
         return True
     except (discord.Forbidden, discord.HTTPException):
         return False
+
+
+async def _welcome_leave_member_join(member):
+    if member.bot:
+        return
+    bot = member.guild._state._get_client()
+    store = getattr(bot, "staff_dashboard_store", None)
+    if store is None:
+        return
+    config = await store.get(str(member.guild.id), {})
+    module = (config.get("modules") or {}).get("welcome") or {}
+    channel_id = str(module.get("channelId") or "")
+    if not module.get("enabled") or not channel_id.isdigit():
+        return
+    channel = member.guild.get_channel(int(channel_id))
+    if not isinstance(channel, discord.TextChannel):
+        return
+    template = str(module.get("message") or "Welcome {user} to {server}!").strip()[:1800]
+    message = template.replace("{user}", member.mention).replace("{username}", member.name).replace("{server}", member.guild.name).replace("{member_count}", str(member.guild.member_count or len(member.guild.members)))
+    try:
+        await channel.send(message, allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False))
+    except (discord.Forbidden, discord.HTTPException):
+        pass
+
+
+async def _welcome_leave_member_remove(member):
+    if member.bot:
+        return
+    bot = member.guild._state._get_client()
+    store = getattr(bot, "staff_dashboard_store", None)
+    if store is None:
+        return
+    config = await store.get(str(member.guild.id), {})
+    module = (config.get("modules") or {}).get("goodbye") or {}
+    channel_id = str(module.get("channelId") or "")
+    if not module.get("enabled") or not channel_id.isdigit():
+        return
+    channel = member.guild.get_channel(int(channel_id))
+    if not isinstance(channel, discord.TextChannel):
+        return
+    template = str(module.get("message") or "{username} has left {server}.").strip()[:1800]
+    message = template.replace("{user}", member.mention).replace("{username}", member.name).replace("{server}", member.guild.name).replace("{member_count}", str(max(0, (member.guild.member_count or len(member.guild.members)) - 1)))
+    try:
+        await channel.send(message, allowed_mentions=discord.AllowedMentions.none())
+    except (discord.Forbidden, discord.HTTPException):
+        pass
 
 
 async def _role_nickname_member_update(before, after):
