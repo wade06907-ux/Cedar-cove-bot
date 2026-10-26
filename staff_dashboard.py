@@ -372,6 +372,8 @@ async def _welcome_leave_member_remove(member):
 async def _role_nickname_member_update(before, after):
     if before.guild is None:
         return
+    if before.roles == after.roles:
+        return
     store = getattr(_configured_bot, "role_nicknames_store", None)
     if store is None:
         return
