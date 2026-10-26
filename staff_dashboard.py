@@ -19,7 +19,7 @@ import discord
 from aiohttp import web
 
 AUTH_API_URL = (os.getenv("AUTH_API_URL") or "https://verification-server-gjqt.onrender.com").rstrip("/")
-DASHBOARD_API_BUILD = "staff-manager-2026-10-25-welcome-leave-custom-message"
+DASHBOARD_API_BUILD = "staff-manager-2026-10-26-logging-honeypot"
 STAFF_ACCOUNT_DELETE_SECRET = os.getenv("STAFF_ACCOUNT_DELETE_SECRET", "").strip()
 STAFF_ROLE_NAMES = {"owner": "Owner", "co owner": "Co Owner", "admin": "Admin", "administrator": "Admin"}
 
@@ -36,6 +36,106 @@ def setup_staff(bot, get_store, logger):
         bot.add_listener(_welcome_leave_member_remove, "on_member_remove")
         bot._welcome_leave_listeners_added = True
     bot.staff_dashboard_logger = logger
+    listeners = [
+        (_dashboard_log_message_delete, 'on_message_delete'), (_dashboard_log_message_edit, 'on_message_edit'),
+        (_dashboard_log_channel_create, 'on_guild_channel_create'), (_dashboard_log_channel_delete, 'on_guild_channel_delete'),
+        (_dashboard_log_channel_update, 'on_guild_channel_update'), (_dashboard_log_role_create, 'on_guild_role_create'),
+        (_dashboard_log_role_delete, 'on_guild_role_delete'), (_dashboard_log_role_update, 'on_guild_role_update'),
+        (_dashboard_log_member_join, 'on_member_join'), (_dashboard_log_member_leave, 'on_member_remove'),
+        (_dashboard_log_member_ban, 'on_member_ban'), (_dashboard_log_member_unban, 'on_member_unban'),
+        (_dashboard_log_member_update, 'on_member_update'), (_dashboard_honeypot_message, 'on_message'),
+    ]
+    for listener, event_name in listeners:
+        marker = '_dashboard_listener_' + event_name
+        if not getattr(bot, marker, False):
+            bot.add_listener(listener, event_name)
+            setattr(bot, marker, True)
+
+
+
+async def _dashboard_module(bot, guild_id, name):
+    store = getattr(bot, 'staff_dashboard_store', None)
+    if store is None: return {}
+    config = await store.get(str(guild_id), {})
+    return ((config.get('modules') or {}).get(name) or {})
+
+async def _log_event(guild, event_key, title, description):
+    bot = guild._state._get_client()
+    settings = await _dashboard_module(bot, guild.id, 'logging')
+    if not settings.get(event_key + 'Enabled'): return
+    channel_id = str(settings.get(event_key + 'ChannelId') or '')
+    channel = guild.get_channel(int(channel_id)) if channel_id.isdigit() else None
+    if not isinstance(channel, discord.TextChannel): return
+    embed = discord.Embed(title=title, description=str(description)[:4000], color=discord.Color.blurple(), timestamp=discord.utils.utcnow())
+    try: await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+    except (discord.Forbidden, discord.HTTPException): pass
+
+async def _dashboard_honeypot_message(message):
+    if message.guild is None or message.author.bot or not isinstance(message.author, discord.Member): return
+    bot = message.guild._state._get_client()
+    module = await _dashboard_module(bot, message.guild.id, 'honeypot')
+    if not module.get('enabled') or str(message.channel.id) != str(module.get('channelId') or ''): return
+    if message.author.id == message.guild.owner_id or message.author.guild_permissions.administrator: return
+    reason = 'Cedar Cove honeypot: message sent in the configured trap channel'
+    punishment = str(module.get('punishment') or 'ban').lower()
+    try:
+        if punishment == 'kick':
+            await message.author.kick(reason=reason); action = 'kick'
+        elif punishment == 'softban':
+            await message.guild.ban(message.author, reason=reason, delete_message_seconds=0)
+            await message.guild.unban(discord.Object(id=message.author.id), reason='Honeypot softban complete'); action = 'softban'
+        elif punishment == 'mute':
+            from datetime import timedelta
+            duration = max(1, min(40320, int(module.get('durationMinutes') or 60)))
+            await message.author.timeout(discord.utils.utcnow() + timedelta(minutes=duration), reason=reason); action = 'timeout'
+        else:
+            await message.author.ban(reason=reason, delete_message_seconds=0); action = 'ban'
+        store = getattr(bot, 'staff_dashboard_store', None)
+        if store is not None:
+            config = await store.get(str(message.guild.id), {})
+            hp = config.setdefault('modules', {}).setdefault('honeypot', {})
+            hp['banCount'] = int(hp.get('banCount') or 0) + (1 if action in {'ban', 'softban'} else 0)
+            hp['actionCount'] = int(hp.get('actionCount') or 0) + 1
+            await store.set(str(message.guild.id), config)
+    except (discord.Forbidden, discord.HTTPException, ValueError) as exc:
+        log = getattr(bot, 'staff_dashboard_logger', None)
+        if log: log.warning('Honeypot punishment failed: %s', exc)
+
+async def _dashboard_log_message_delete(message):
+    if message.guild and not message.author.bot: await _log_event(message.guild, 'messageDelete', 'Message deleted', 'Author: {} ({})\nChannel: {}\nContent: {}'.format(message.author, message.author.id, message.channel.mention, (message.content or '[no text]')[:2500]))
+async def _dashboard_log_message_edit(before, after):
+    if after.guild and not after.author.bot and before.content != after.content: await _log_event(after.guild, 'messageEdit', 'Message edited', 'Author: {} ({})\nChannel: {}\nBefore: {}\nAfter: {}'.format(after.author, after.author.id, after.channel.mention, (before.content or '[empty]')[:1200], (after.content or '[empty]')[:1200]))
+async def _dashboard_log_channel_create(channel):
+    if channel.guild: await _log_event(channel.guild, 'channelCreate', 'Channel created', '{} ({})'.format(channel.name, channel.id))
+async def _dashboard_log_channel_delete(channel):
+    if channel.guild: await _log_event(channel.guild, 'channelDelete', 'Channel deleted', '{} ({})'.format(channel.name, channel.id))
+async def _dashboard_log_channel_update(before, after):
+    if after.guild and (before.name != after.name or before.category_id != after.category_id): await _log_event(after.guild, 'channelUpdate', 'Channel updated', '{} -> {} ({})'.format(before.name, after.name, after.id))
+async def _dashboard_log_role_create(role):
+    await _log_event(role.guild, 'roleCreate', 'Role created', '{} ({})'.format(role.name, role.id))
+async def _dashboard_log_role_delete(role):
+    await _log_event(role.guild, 'roleDelete', 'Role deleted', '{} ({})'.format(role.name, role.id))
+async def _dashboard_log_role_update(before, after):
+    if before.name != after.name or before.permissions != after.permissions: await _log_event(after.guild, 'roleUpdate', 'Role updated', '{} -> {} ({})'.format(before.name, after.name, after.id))
+async def _dashboard_log_member_join(member):
+    if not member.bot: await _log_event(member.guild, 'memberJoin', 'Member joined', '{} ({})'.format(member, member.id))
+async def _dashboard_log_member_leave(member):
+    if not member.bot: await _log_event(member.guild, 'memberLeave', 'Member left', '{} ({})'.format(member, member.id))
+async def _dashboard_log_member_ban(guild, user):
+    await _log_event(guild, 'memberBan', 'Member banned', '{} ({})'.format(user, user.id))
+async def _dashboard_log_member_unban(guild, user):
+    await _log_event(guild, 'memberUnban', 'Member unbanned', '{} ({})'.format(user, user.id))
+async def _dashboard_log_member_update(before, after):
+    if before.guild and before.nick != after.nick: await _log_event(after.guild, 'nicknameUpdate', 'Nickname changed', '{}: {} -> {}'.format(after, before.nick or before.name, after.nick or after.name))
+    if before.guild and {r.id for r in before.roles} != {r.id for r in after.roles}: await _log_event(after.guild, 'memberRoleUpdate', 'Member roles changed', '{} ({})'.format(after, after.id))
+async def get_honeypot_stats(request):
+    user, error = await _authorized(request)
+    if error: return error
+    gid = request.match_info['guild_id']
+    if not gid.isdigit() or request.app['staff_bot'].get_guild(int(gid)) is None: return _json(request, {'error': 'The bot is not in that server.'}, 404)
+    config = await request.app['staff_store'].get(gid, {})
+    module = ((config.get('modules') or {}).get('honeypot') or {})
+    return _json(request, {'enabled': bool(module.get('enabled')), 'banCount': int(module.get('banCount') or 0), 'actionCount': int(module.get('actionCount') or 0), 'channelId': str(module.get('channelId') or '')})
 
 
 def _origin(request: web.Request) -> str:
@@ -855,6 +955,7 @@ def register_staff_routes(app: web.Application):
     app.router.add_post("/api/dashboard/publish-panel", publish_panel)
     app.router.add_post("/api/dashboard/send-message", send_module_message)
     app.router.add_get("/api/dashboard/guilds/{guild_id}/audit", list_audit)
+    app.router.add_get("/api/dashboard/guilds/{guild_id}/honeypot-stats", get_honeypot_stats)
     app.router.add_get("/api/dashboard/guilds/{guild_id}/role-nicknames", get_role_nicknames)
     app.router.add_put("/api/dashboard/guilds/{guild_id}/role-nicknames", save_role_nicknames)
 
