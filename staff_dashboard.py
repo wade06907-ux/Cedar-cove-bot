@@ -416,8 +416,8 @@ async def send_module_message(request):
         return _json(request, {"error": "The bot is not in that server."}, 404)
     config = await request.app["staff_store"].get(gid, {})
     module = config.get("modules", {}).get(module_name, {})
-    if module_name == "custom_message":
-        channel_id = str(body.get("channelId") or "")
+    if module_name in {"custom_message", "honeypot"}:
+        channel_id = str(body.get("channelId") or (module.get("channelId") if module_name == "honeypot" else "") or "")
         module = {"enabled": True}
     else:
         if not module or not module.get("enabled"):
