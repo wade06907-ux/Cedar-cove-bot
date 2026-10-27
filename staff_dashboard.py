@@ -50,9 +50,13 @@ def setup_staff(bot, get_store, logger):
         if not getattr(bot, marker, False):
             bot.add_listener(listener, event_name)
             setattr(bot, marker, True)
-    if not getattr(bot, '_verification_refresh_task_started', False):
-        bot.loop.create_task(_verification_refresh_loop(bot))
-        bot._verification_refresh_task_started = True
+    if not getattr(bot, '_verification_refresh_listener_added', False):
+        async def _start_verification_refresh():
+            if not getattr(bot, '_verification_refresh_task_started', False):
+                bot._verification_refresh_task = asyncio.create_task(_verification_refresh_loop(bot))
+                bot._verification_refresh_task_started = True
+        bot.add_listener(_start_verification_refresh, 'on_ready')
+        bot._verification_refresh_listener_added = True
 
 
 
