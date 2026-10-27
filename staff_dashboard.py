@@ -390,7 +390,7 @@ async def publish_panel(request):
         else:
             view = staff_bot.ticket_select_view_cls(options)
         msg = await channel.send(embed=embed, view=view)
-        panel_record = {"title": title, "description": description, "channel_id": int(channel.id), "category_id": int(category.id) if category else None, "role_id": int(role.id) if role else None, "options": options, "message_id": msg.id, "guild_id": guild.id, "created_by_dashboard": True}
+        panel_record = {"title": title, "description": description, "channel_id": int(channel.id), "category_id": int(category.id) if category else None, "role_id": int(roles[0].id) if roles else None, "options": options, "message_id": msg.id, "guild_id": guild.id, "created_by_dashboard": True}
         await request.app["panels_store"].set(msg.id, panel_record)
         await _audit(request, gid, user, "publish_panel", f"Ticket panel posted in #{channel.name}")
         return _json(request, {"ok": True, "channelId": str(channel.id), "channelName": channel.name, "messageId": str(msg.id)})
