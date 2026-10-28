@@ -82,7 +82,17 @@ async def _dashboard_honeypot_message(message):
     bot = message.guild._state._get_client()
     module = await _dashboard_module(bot, message.guild.id, 'honeypot')
     if not module.get('enabled') or str(message.channel.id) != str(module.get('channelId') or ''): return
-    if message.author.id == message.guild.owner_id or message.author.guild_permissions.administrator: return
+    if message.author.id == message.guild.owner_id:
+        try:
+            await message.channel.send(
+                f"❌ {message.author.mention}, the server owner cannot be banned by the honeypot.",
+                delete_after=10,
+                allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
+            )
+        except (discord.Forbidden, discord.HTTPException):
+            pass
+        return
+    if message.author.guild_permissions.administrator: return
     reason = 'Cedar Cove honeypot: message sent in the configured trap channel'
     punishment = str(module.get('punishment') or 'ban').lower()
     try:
