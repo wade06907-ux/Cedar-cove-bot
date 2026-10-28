@@ -888,7 +888,40 @@ async def staff_action(request):
         records = {}
     record = records.setdefault(member_id, {"warnings": [], "strikes": [], "loa": None, "suspended": False})
     actor = {"id": str(user.get("discordId")), "username": str(user.get("discordUsername") or user.get("username") or "Staff manager")[:100]}
-    if action in {"warn", "strike"}:
+    if action in {"promote", "demote"}:
+        config = await request.app["staff_store"].get(str(guild.id), {})
+        ladder = (((config.get("modules") or {}).get("staff_ladder") or {}).get("items") or [])
+        if not ladder:
+            return _json(request, {"error": "Set up and save the staff ladder first."}, 400)
+        ladder_roles = []
+        for item in ladder:
+            role = guild.get_role(int(item.get("roleId", 0))) if str(item.get("roleId", "")).isdigit() else None
+            if role:
+                ladder_roles.append((item, role))
+        current_indexes = [i for i, (_, role) in enumerate(ladder_roles) if role in member.roles]
+        if action == "promote":
+            next_index = (max(current_indexes) + 1) if current_indexes else 0
+        else:
+            next_index = (min(current_indexes) - 1) if current_indexes else -1
+        if next_index < 0 or next_index >= len(ladder_roles):
+            return _json(request, {"error": "This staff member is already at the end of the staff ladder."}, 400)
+        target_item, target_role = ladder_roles[next_index]
+        if not guild.me.guild_permissions.manage_roles:
+            return _json(request, {"error": "The bot needs Manage Roles permission to change staff ranks."}, 403)
+        if target_role >= guild.me.top_role or any(role >= guild.me.top_role for _, role in ladder_roles if role in member.roles):
+            return _json(request, {"error": "Move the bot's highest role above all staff ladder roles."}, 403)
+        try:
+            remove_roles = [role for _, role in ladder_roles if role in member.roles and role != target_role]
+            if remove_roles:
+                await member.remove_roles(*remove_roles, reason=f"Staff {action} by {actor['username']}: {reason or 'Staff ladder change'}")
+            if target_role not in member.roles:
+                await member.add_roles(target_role, reason=f"Staff {action} by {actor['username']}: {reason or 'Staff ladder change'}")
+        except discord.Forbidden:
+            return _json(request, {"error": "Discord denied the role change. Check Manage Roles and role hierarchy."}, 403)
+        except discord.HTTPException:
+            return _json(request, {"error": "Discord could not update this staff member's role."}, 502)
+        record.setdefault("history", []).append({"action": action, "rank": target_item.get("name", target_role.name), "by": actor, "at": now, "reason": reason})
+    elif action in {"warn", "strike"}:
         if not reason:
             return _json(request, {"error": "Enter a reason for this action."}, 400)
         key = "warnings" if action == "warn" else "strikes"
