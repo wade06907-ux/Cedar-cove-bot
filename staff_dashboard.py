@@ -86,6 +86,12 @@ async def _dashboard_honeypot_message(message):
     reason = 'Cedar Cove honeypot: message sent in the configured trap channel'
     punishment = str(module.get('punishment') or 'ban').lower()
     try:
+        try:
+            await message.delete()
+        except (discord.Forbidden, discord.HTTPException) as exc:
+            log = getattr(bot, 'staff_dashboard_logger', None)
+            if log:
+                log.warning('Honeypot could not delete trap message %s: %s', message.id, exc)
         if punishment == 'kick':
             await message.author.kick(reason=reason); action = 'kick'
         elif punishment == 'softban':
