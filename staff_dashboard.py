@@ -305,6 +305,54 @@ async def list_roles(request: web.Request):
     return _json(request, {"roles": roles})
 
 
+async def get_staff_ladder(request):
+    user, error = await _authorized(request)
+    if error:
+        return error
+    guild, error = await _guild(request, user)
+    if error:
+        return error
+    config = await request.app["staff_store"].get(str(guild.id), {})
+    ladder = ((config.get("modules") or {}).get("staff_ladder") or {}).get("items", [])
+    return _json(request, {"guildId": str(guild.id), "items": ladder if isinstance(ladder, list) else []})
+
+
+async def save_staff_ladder(request):
+    user, error = await _authorized(request)
+    if error:
+        return error
+    guild, error = await _guild(request, user)
+    if error:
+        return error
+    try:
+        body = await request.json()
+    except Exception:
+        return _json(request, {"error": "Invalid JSON body."}, 400)
+    items = body.get("items")
+    if not isinstance(items, list) or len(items) > 30:
+        return _json(request, {"error": "Provide up to 30 ladder ranks."}, 400)
+    cleaned = []
+    seen = set()
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()[:60]
+        description = str(item.get("description") or "").strip()[:240]
+        role_id = str(item.get("roleId") or "").strip()
+        if not name or not role_id.isdigit() or role_id in seen:
+            return _json(request, {"error": "Each rank needs a name and a unique Discord role."}, 400)
+        role = guild.get_role(int(role_id))
+        if role is None or role.is_default():
+            return _json(request, {"error": "A selected Discord role no longer exists."}, 400)
+        seen.add(role_id)
+        cleaned.append({"id": str(item.get("id") or secrets.token_hex(6)), "name": name, "description": description, "roleId": role_id})
+    config = await request.app["staff_store"].get(str(guild.id), {})
+    modules = config.setdefault("modules", {})
+    modules["staff_ladder"] = {"items": cleaned, "updatedAt": int(time.time()), "updatedBy": str(user.get("username") or "")}
+    await request.app["staff_store"].set(str(guild.id), config)
+    return _json(request, {"ok": True, "items": cleaned})
+
+
 async def get_config(request):
     user, error = await _authorized(request)
     if error:
@@ -1002,6 +1050,8 @@ def register_staff_routes(app: web.Application):
     app.router.add_get("/api/dashboard/guilds", list_guilds)
     app.router.add_get("/api/dashboard/guilds/{guild_id}/channels", list_channels)
     app.router.add_get("/api/dashboard/guilds/{guild_id}/roles", list_roles)
+    app.router.add_get("/api/dashboard/guilds/{guild_id}/staff-ladder", get_staff_ladder)
+    app.router.add_put("/api/dashboard/guilds/{guild_id}/staff-ladder", save_staff_ladder)
     app.router.add_get("/api/dashboard/guilds/{guild_id}/config", get_config)
     app.router.add_put("/api/dashboard/guilds/{guild_id}/config", save_config)
     # Compatibility aliases for dashboard versions that use /settings.
