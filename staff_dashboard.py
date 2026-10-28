@@ -84,6 +84,10 @@ async def _dashboard_honeypot_message(message):
     if not module.get('enabled') or str(message.channel.id) != str(module.get('channelId') or ''): return
     if message.author.id == message.guild.owner_id:
         try:
+            await message.delete()
+        except (discord.Forbidden, discord.HTTPException):
+            pass
+        try:
             await message.channel.send(
                 f"❌ {message.author.mention}, the server owner cannot be banned by the honeypot.",
                 delete_after=10,
