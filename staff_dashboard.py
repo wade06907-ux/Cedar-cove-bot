@@ -921,13 +921,13 @@ def _github_staff_cards(items):
         role = html.escape(str(item["role"]), quote=True)
         avatar = html.escape(str(item["avatar"]), quote=True)
         cards.append(
-            '      <div class="staff-card">\\n'
-            f'        <div class="staff-avatar"><img src="{avatar}" alt="{name} avatar"></div>\\n'
-            f'        <h3>{name}</h3>\\n'
-            f'        <span class="staff-role">{role}</span>\\n'
+            '      <div class="staff-card">\n'
+            f'        <div class="staff-avatar"><img src="{avatar}" alt="{name} avatar"></div>\n'
+            f'        <h3>{name}</h3>\n'
+            f'        <span class="staff-role">{role}</span>\n'
             '      </div>'
         )
-    return "\\n".join(cards)
+    return "\n".join(cards)
 
 
 async def sync_github_staff_website(bot, reason="staff roster update"):
