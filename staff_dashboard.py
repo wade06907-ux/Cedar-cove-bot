@@ -667,17 +667,15 @@ async def save_role_nicknames(request):
     for member in members:
         if member.bot:
             continue
-        current = member.nick or member.name
-        base = current
-        for old_rule in previous_rules:
-            old_prefix = str(old_rule.get("prefix") or "")
-            old_suffix = str(old_rule.get("suffix") or "")
-            if old_prefix and base.startswith(old_prefix):
-                base = base[len(old_prefix):]
-            if old_suffix and base.endswith(old_suffix):
-                base = base[:-len(old_suffix)]
+        base = (getattr(member, "global_name", None) or member.name).strip()
         match = next((rule for rule in rules if any(str(role.id) == str(rule["roleId"]) for role in member.roles)), None)
-        desired = ((str(match.get("prefix") or "") + base + str(match.get("suffix") or ""))[:32]) if match else base
+        if match:
+            prefix = str(match.get("prefix") or "")
+            suffix = str(match.get("suffix") or "")
+            available = max(0, 32 - len(prefix) - len(suffix))
+            desired = (prefix + base[:available] + suffix)[:32]
+        else:
+            desired = base[:32]
         if desired != member.nick:
             try:
                 await member.edit(nick=desired, reason="Cedar Cove role nickname rule sync")
