@@ -832,9 +832,12 @@ async def staff_list(request):
     records = await request.app["staff_management_store"].get(str(guild.id), {})
     if not isinstance(records, dict):
         records = {}
+    staff_config = await request.app["staff_store"].get(str(guild.id), {})
+    ladder_items = (((staff_config.get("modules") or {}).get("staff_ladder") or {}).get("items") or [])
+    ladder_role_ids = [item.get("roleId") for item in ladder_items if isinstance(item, dict)]
     items = []
     for member in sorted(guild.members, key=lambda m: m.display_name.casefold()):
-        roles = _member_staff_roles(member)
+        roles = _member_staff_roles(member, ladder_role_ids)
         record = records.get(str(member.id), {})
         suspended = bool(record.get("suspended"))
         if (not roles and not suspended) or member.bot:
@@ -1009,13 +1012,18 @@ async def staff_action(request):
             role = guild.get_role(int(item.get("roleId", 0))) if str(item.get("roleId", "")).isdigit() else None
             if role:
                 ladder_roles.append((item, role))
+        if not ladder_roles:
+            return _json(request, {"error": "None of the saved staff ladder roles still exist in Discord. Re-select the roles and save the ladder."}, 400)
         current_indexes = [i for i, (_, role) in enumerate(ladder_roles) if role in member.roles]
-        if action == "promote":
-            next_index = (max(current_indexes) + 1) if current_indexes else 0
-        else:
-            next_index = (min(current_indexes) - 1) if current_indexes else -1
+        # First saved rank is lowest; last saved rank is highest.
+        current_index = max(current_indexes) if current_indexes else -1
+        next_index = current_index + 1 if action == "promote" else current_index - 1
+        if action == "demote" and current_index < 0:
+            return _json(request, {"error": "This member does not currently hold a staff ladder role."}, 400)
         if next_index < 0 or next_index >= len(ladder_roles):
-            return _json(request, {"error": "This staff member is already at the end of the staff ladder."}, 400)
+            edge = "highest" if action == "promote" else "lowest"
+            return _json(request, {"error": f"This staff member is already at the {edge} rank."}, 400)
+        old_rank = ladder_roles[current_index][0].get("name", ladder_roles[current_index][1].name) if current_index >= 0 else "Not on ladder"
         target_item, target_role = ladder_roles[next_index]
         if not guild.me.guild_permissions.manage_roles:
             return _json(request, {"error": "The bot needs Manage Roles permission to change staff ranks."}, 403)
@@ -1033,7 +1041,7 @@ async def staff_action(request):
             return _json(request, {"error": "Discord could not update this staff member's role."}, 502)
         record.setdefault("history", []).append({"action": action, "rank": target_item.get("name", target_role.name), "by": actor, "at": now, "reason": reason})
         settings = (((config.get("modules") or {}).get("staff_actions") or {}))
-        await _send_staff_announcement(guild, settings.get("promotionChannelId"), settings.get("promotionMessage"), member, actor, reason, action, new_rank=target_item.get("name", target_role.name))
+        await _send_staff_announcement(guild, settings.get("promotionChannelId"), settings.get("promotionMessage"), member, actor, reason, action, old_rank=old_rank, new_rank=target_item.get("name", target_role.name))
     elif action in {"warn", "strike"}:
         if not reason:
             return _json(request, {"error": "Enter a reason for this action."}, 400)
