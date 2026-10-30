@@ -972,23 +972,31 @@ async def sync_github_staff_website(bot, reason="staff roster update"):
                     bot.staff_dashboard_logger.exception("GitHub staff sync received unreadable HTML content.")
                     return False
 
-                start_marker = "<!-- BOT_STAFF_CARDS_START -->"
-                end_marker = "<!-- BOT_STAFF_CARDS_END -->"
-                if current_html.count(start_marker) != 1 or current_html.count(end_marker) != 1:
+                grid_match = re.search(r'<div\s+class="staff-grid"[^>]*>', current_html, re.IGNORECASE)
+                if not grid_match:
                     bot.staff_dashboard_logger.error(
-                        "GitHub staff sync stopped: %s must contain exactly one pair of bot staff-card markers.",
+                        "GitHub staff sync stopped: no staff-grid was found in %s.",
                         GITHUB_STAFF_HTML_FILE,
                     )
                     return False
-                start = current_html.index(start_marker) + len(start_marker)
-                end = current_html.index(end_marker)
-                if end < start:
-                    bot.staff_dashboard_logger.error("GitHub staff sync stopped: staff-card markers are out of order.")
+
+                start = grid_match.end()
+                depth = 1
+                end = None
+                for tag in re.finditer(r'</?div\b[^>]*>', current_html[start:], re.IGNORECASE):
+                    if tag.group(0).startswith("</"):
+                        depth -= 1
+                    elif not tag.group(0).rstrip().endswith("/>"):
+                        depth += 1
+                    if depth == 0:
+                        end = start + tag.start()
+                        break
+
+                if end is None:
+                    bot.staff_dashboard_logger.error("GitHub staff sync stopped: staff-grid HTML is incomplete.")
                     return False
 
-                updated_html = current_html[:start] + "\\n" + cards + "\\n    " + current_html[end:]
-                if updated_html == current_html:
-                    return True
+                updated_html = current_html[:start] + "\n" + cards + "\n    " + current_html[end:]
 
                 body = {
                     "message": f"Update Cedar Cove staff cards ({reason})",
