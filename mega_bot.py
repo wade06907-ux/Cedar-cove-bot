@@ -41,8 +41,8 @@ DISCORD_TOKEN = os.getenv("DISCORD_BOT_TOKEN") or os.getenv("DISCORD_TOKEN") or 
 
 MONGODB_URI = os.getenv("MONGODB_URI")
 # Single shared database name for both subsystems (accepts either old name).
-MONGODB_DB_NAME = os.getenv("MONGODB_DB_NAME") or os.getenv("MONGODB_DB", "mega_bot")
-MONGODB_DB = MONGODB_DB_NAME  # alias used internally by the ticket-storage helpers
+MONGODB_DB_NAME = (os.getenv("MONGODB_DATABASE") or os.getenv("MONGODB_DB_NAME") or os.getenv("MONGODB_DB") or "cedar_cove").strip() or "cedar_cove"
+MONGODB_DB = MONGODB_DB_NAME  # all bot modules share the Cedar Cove database
 
 GUILD_ID = os.getenv("GUILD_ID")
 PORT = int(os.getenv("PORT", "8080"))
@@ -406,7 +406,7 @@ active_builders: dict[int, dict] = {}
 # fail until a connection string is provided.
 
 cedar_cove_mongo = AsyncIOMotorClient(MONGODB_URI, serverSelectionTimeoutMS=5000)
-cedar_cove_db = cedar_cove_mongo["cedar_cove"]
+cedar_cove_db = cedar_cove_mongo[MONGODB_DB_NAME]
 
 vc_guild_configs = cedar_cove_db["guilds"]
 temp_channels = cedar_cove_db["temp_channels"]
