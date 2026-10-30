@@ -513,16 +513,17 @@ async def send_module_message(request):
 async def _apply_role_nickname(member, rules):
     if member.bot:
         return False
-    current = member.nick or member.name
-    base = current
-    for rule in rules:
-        prefix, suffix = str(rule.get("prefix") or ""), str(rule.get("suffix") or "")
-        if prefix and base.startswith(prefix):
-            base = base[len(prefix):]
-        if suffix and base.endswith(suffix):
-            base = base[:-len(suffix)]
+    # Always build from the member's Discord profile display name, never the
+    # previously generated server nickname. This prevents old suffixes stacking.
+    base = (getattr(member, "global_name", None) or member.name).strip()
     match = next((rule for rule in rules if str(rule.get("roleId", "")).isdigit() and any(str(role.id) == str(rule["roleId"]) for role in member.roles)), None)
-    desired = ((str(match.get("prefix") or "") + base + str(match.get("suffix") or ""))[:32]) if match else base
+    if match:
+        prefix = str(match.get("prefix") or "")
+        suffix = str(match.get("suffix") or "")
+        available = max(0, 32 - len(prefix) - len(suffix))
+        desired = (prefix + base[:available] + suffix)[:32]
+    else:
+        desired = base[:32]
     if desired == member.nick:
         return False
     try:
@@ -1007,7 +1008,11 @@ async def staff_action(request):
             await _send_staff_announcement(guild, settings.get("firedChannelId"), settings.get("firedMessage"), member, actor, reason, "fired")
             await _audit(request, str(guild.id), user, "staff_fired", f"Fired {member_id}: {reason}")
             return _json(request, {"ok": True, "message": "Staff member fired; linked account deletion checked.", "accountDeleted": bool(deletion.get("deleted"))})
+        records.pop(member_id, None)
+        await store.set(str(guild.id), records)
         await _send_staff_announcement(guild, settings.get("retirementChannelId"), settings.get("retirementMessage"), member, actor, reason, "retired")
+        await _audit(request, str(guild.id), user, "staff_retired", f"Retired {member_id}: {reason or 'No reason provided'}")
+        return _json(request, {"ok": True, "message": "Staff member retired and their staff database record was deleted."})
     elif action in {"promote", "demote"}:
         config = await request.app["staff_store"].get(str(guild.id), {})
         ladder = (((config.get("modules") or {}).get("staff_ladder") or {}).get("items") or [])
