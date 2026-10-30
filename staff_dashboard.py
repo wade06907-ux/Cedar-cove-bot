@@ -510,20 +510,27 @@ async def send_module_message(request):
         return _json(request, {"error": f"Discord could not send the message (HTTP {exc.status})."}, 502)
 
 
+def _profile_display_name(member):
+    return (getattr(member, "global_name", None) or member.name).strip()
+
+
+def _role_nickname_value(member, rule):
+    base = _profile_display_name(member)
+    prefix = str(rule.get("prefix") or "")
+    suffix = str(rule.get("suffix") or "")
+    if prefix and base.casefold().startswith(prefix.casefold()):
+        prefix = ""
+    if suffix and base.casefold().endswith(suffix.casefold()):
+        suffix = ""
+    available = max(0, 32 - len(prefix) - len(suffix))
+    return (prefix + base[:available] + suffix)[:32]
+
+
 async def _apply_role_nickname(member, rules):
     if member.bot:
         return False
-    # Always build from the member's Discord profile display name, never the
-    # previously generated server nickname. This prevents old suffixes stacking.
-    base = (getattr(member, "global_name", None) or member.name).strip()
     match = next((rule for rule in rules if str(rule.get("roleId", "")).isdigit() and any(str(role.id) == str(rule["roleId"]) for role in member.roles)), None)
-    if match:
-        prefix = str(match.get("prefix") or "")
-        suffix = str(match.get("suffix") or "")
-        available = max(0, 32 - len(prefix) - len(suffix))
-        desired = (prefix + base[:available] + suffix)[:32]
-    else:
-        desired = base[:32]
+    desired = _role_nickname_value(member, match) if match else _profile_display_name(member)[:32]
     if desired == member.nick:
         return False
     try:
@@ -667,15 +674,8 @@ async def save_role_nicknames(request):
     for member in members:
         if member.bot:
             continue
-        base = (getattr(member, "global_name", None) or member.name).strip()
         match = next((rule for rule in rules if any(str(role.id) == str(rule["roleId"]) for role in member.roles)), None)
-        if match:
-            prefix = str(match.get("prefix") or "")
-            suffix = str(match.get("suffix") or "")
-            available = max(0, 32 - len(prefix) - len(suffix))
-            desired = (prefix + base[:available] + suffix)[:32]
-        else:
-            desired = base[:32]
+        desired = _role_nickname_value(member, match) if match else _profile_display_name(member)[:32]
         if desired != member.nick:
             try:
                 await member.edit(nick=desired, reason="Cedar Cove role nickname rule sync")
@@ -955,8 +955,14 @@ async def staff_action(request):
     record = records.setdefault(member_id, {"warnings": [], "strikes": [], "loa": None, "suspended": False})
     actor = {"id": str(user.get("discordId")), "username": str(user.get("discordUsername") or user.get("username") or "Staff manager")[:100]}
     if action in {"retire", "fire", "fired"}:
-        if action in {"fire", "fired"} and not reason:
+        is_fired = action in {"fire", "fired"}
+        if is_fired and not reason:
             return _json(request, {"error": "A reason is required to fire a staff member."}, 400)
+        if str(member.id) == str(user.get("discordId")) and is_fired:
+            return _json(request, {"error": "You cannot fire yourself through staff management."}, 400)
+        if not STAFF_ACCOUNT_DELETE_SECRET:
+            return _json(request, {"error": "Dashboard access revocation is not configured. Set STAFF_ACCOUNT_DELETE_SECRET on both services."}, 503)
+
         config = await request.app["staff_store"].get(str(guild.id), {})
         settings = ((config.get("modules") or {}).get("staff_actions") or {})
         member_role = guild.get_role(int(settings.get("memberRoleId") or 0)) if str(settings.get("memberRoleId") or "").isdigit() else None
@@ -976,41 +982,46 @@ async def staff_action(request):
             return _json(request, {"error": "The bot needs Manage Roles permission."}, 403)
         if any(role >= guild.me.top_role for role in [member_role, retired_role, *staff_roles]):
             return _json(request, {"error": "Move the bot's highest role above the Member, Retired from Staff, and staff roles."}, 403)
+
+        # Revoke dashboard access and invalidate active website sessions,
+        # but preserve the person's website account and its existing data.
         try:
-            await member.remove_roles(*staff_roles, reason=f"Staff retired by {actor['username']}: {reason or 'No reason provided'}")
+            timeout = aiohttp.ClientTimeout(total=10)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.post(
+                    AUTH_API_URL + "/api/internal/staff/dashboard-access",
+                    json={"discordId": str(member.id), "allowed": False},
+                    headers={"X-Staff-Manager-Key": STAFF_ACCOUNT_DELETE_SECRET},
+                ) as resp:
+                    access_result = await resp.json(content_type=None)
+                    if resp.status not in (200, 404):
+                        return _json(request, {"error": access_result.get("error", "Could not revoke dashboard access.")}, resp.status)
+                    access_revoked = resp.status == 200 and access_result.get("whitelisted") is False
+        except Exception:
+            request.app["staff_logger"].exception("Staff dashboard access revocation failed")
+            return _json(request, {"error": "Could not reach the verification service. No Discord roles were changed."}, 502)
+
+        try:
+            await member.remove_roles(*staff_roles, reason=f"Staff {'fired' if is_fired else 'retired'} by {actor['username']}: {reason or 'No reason provided'}")
             add_roles = [role for role in (member_role, retired_role) if role not in member.roles]
             if add_roles:
-                await member.add_roles(*add_roles, reason=f"Staff retired by {actor['username']}")
+                await member.add_roles(*add_roles, reason=f"Staff {'fired' if is_fired else 'retired'} by {actor['username']}")
         except discord.Forbidden:
-            return _json(request, {"error": "Discord denied the role change. Check Manage Roles and role hierarchy."}, 403)
+            return _json(request, {"error": "Dashboard access was revoked, but Discord denied the role change. Check Manage Roles and role hierarchy."}, 403)
         except discord.HTTPException:
-            return _json(request, {"error": "Discord could not update this member's roles."}, 502)
-        record.setdefault("history", []).append({"action": "retire", "by": actor, "at": now, "reason": reason})
-        if action in {"fire", "fired"}:
-            if not STAFF_ACCOUNT_DELETE_SECRET:
-                return _json(request, {"error": "Account deletion is not configured. Set STAFF_ACCOUNT_DELETE_SECRET on both services."}, 503)
-            if str(member.id) == str(user.get("discordId")):
-                return _json(request, {"error": "You cannot fire yourself through staff management."}, 400)
-            try:
-                timeout = aiohttp.ClientTimeout(total=10)
-                async with aiohttp.ClientSession(timeout=timeout) as session:
-                    async with session.post(AUTH_API_URL + "/api/internal/staff/delete-account", json={"discordId": str(member.id)}, headers={"X-Staff-Manager-Key": STAFF_ACCOUNT_DELETE_SECRET}) as resp:
-                        deletion = await resp.json(content_type=None)
-                        if resp.status not in (200, 404):
-                            return _json(request, {"error": deletion.get("error", "Could not delete the linked website account.")}, resp.status)
-            except Exception:
-                request.app["staff_logger"].exception("Fired staff account deletion failed")
-                return _json(request, {"error": "Could not reach the verification service; Discord roles were changed but staff removal was not finalized."}, 502)
-            records.pop(member_id, None)
-            await store.set(str(guild.id), records)
-            await _send_staff_announcement(guild, settings.get("firedChannelId"), settings.get("firedMessage"), member, actor, reason, "fired")
-            await _audit(request, str(guild.id), user, "staff_fired", f"Fired {member_id}: {reason}")
-            return _json(request, {"ok": True, "message": "Staff member fired; linked account deletion checked.", "accountDeleted": bool(deletion.get("deleted"))})
+            return _json(request, {"error": "Dashboard access was revoked, but Discord could not update this member's roles."}, 502)
+
+        final_action = "fire" if is_fired else "retire"
+        record.setdefault("history", []).append({"action": final_action, "by": actor, "at": now, "reason": reason})
         records.pop(member_id, None)
         await store.set(str(guild.id), records)
+        if is_fired:
+            await _send_staff_announcement(guild, settings.get("firedChannelId"), settings.get("firedMessage"), member, actor, reason, "fired")
+            await _audit(request, str(guild.id), user, "staff_fired", f"Fired {member_id}: {reason}")
+            return _json(request, {"ok": True, "message": "Staff member fired; dashboard access revoked and website account preserved.", "dashboardAccessRevoked": access_revoked})
         await _send_staff_announcement(guild, settings.get("retirementChannelId"), settings.get("retirementMessage"), member, actor, reason, "retired")
         await _audit(request, str(guild.id), user, "staff_retired", f"Retired {member_id}: {reason or 'No reason provided'}")
-        return _json(request, {"ok": True, "message": "Staff member retired and their staff database record was deleted."})
+        return _json(request, {"ok": True, "message": "Staff member retired; dashboard access revoked and website account preserved.", "dashboardAccessRevoked": access_revoked})
     elif action in {"promote", "demote"}:
         config = await request.app["staff_store"].get(str(guild.id), {})
         ladder = (((config.get("modules") or {}).get("staff_ladder") or {}).get("items") or [])
