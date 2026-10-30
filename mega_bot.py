@@ -412,10 +412,53 @@ vc_guild_configs = cedar_cove_db["guilds"]
 temp_channels = cedar_cove_db["temp_channels"]
 
 
+async def migrate_legacy_mega_bot_data():
+    if MONGODB_DB_NAME == "mega_bot":
+        return
+    legacy_db = cedar_cove_mongo["mega_bot"]
+    collections = (
+        "connections",
+        "settings",
+        "guild_links",
+        "panels",
+        "tickets",
+        "counters",
+        "staff_dashboard_configs",
+        "staff_dashboard_audit",
+        "role_nicknames",
+        "staff_management_records",
+    )
+    try:
+        existing_collections = set(await legacy_db.list_collection_names())
+    except Exception as exc:
+        logger.warning("Could not inspect legacy mega_bot database: %s", exc)
+        return
+
+    for name in collections:
+        if name not in existing_collections:
+            continue
+        source = legacy_db[name]
+        destination = cedar_cove_db[name]
+        copied = 0
+        try:
+            async for document in source.find({}):
+                if "_id" not in document:
+                    continue
+                exists = await destination.find_one({"_id": document["_id"]}, {"_id": 1})
+                if exists is None:
+                    await destination.insert_one(document)
+                    copied += 1
+            if copied:
+                logger.info("Migrated %d documents from mega_bot.%s into %s.%s", copied, name, MONGODB_DB_NAME, name)
+        except Exception as exc:
+            logger.warning("Legacy migration for collection %s stopped safely: %s", name, exc)
+
+
 async def check_cedar_cove_mongodb():
     try:
         await cedar_cove_mongo.server_info()
-        logger.info("Cedar Cove: MongoDB connected.")
+        logger.info("Cedar Cove: MongoDB connected using database %s.", MONGODB_DB_NAME)
+        await migrate_legacy_mega_bot_data()
     except Exception as exc:
         logger.warning(
             "Cedar Cove: MongoDB connection failed (%s). Voice channel "
