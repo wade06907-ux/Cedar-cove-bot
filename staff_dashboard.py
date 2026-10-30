@@ -20,7 +20,7 @@ import discord
 from aiohttp import web
 
 AUTH_API_URL = (os.getenv("AUTH_API_URL") or "https://verification-server-gjqt.onrender.com").rstrip("/")
-DASHBOARD_API_BUILD = "staff-manager-2026-10-30-auto-guild-mongodb-auth"
+DASHBOARD_API_BUILD = "staff-manager-2026-10-30-public-staff-roster"
 STAFF_ROLE_NAMES = {"owner": "Owner", "co owner": "Co Owner", "admin": "Admin", "administrator": "Admin"}
 
 
@@ -881,6 +881,39 @@ def _loa_state(record, now=None):
     return "on_leave"
 
 
+
+async def public_staff_list(request):
+    bot = request.app["staff_bot"]
+    named_guilds = [guild for guild in bot.guilds if "cedar cove" in guild.name.casefold()]
+    if named_guilds:
+        guild = sorted(named_guilds, key=lambda item: (item.name.casefold() != "cedar cove", item.name.casefold()))[0]
+    elif len(bot.guilds) == 1:
+        guild = bot.guilds[0]
+    else:
+        return _json(request, {"error": "Cedar Cove server could not be identified.", "items": []}, 503)
+
+    staff_config = await request.app["staff_store"].get(str(guild.id), {})
+    ladder_items = (((staff_config.get("modules") or {}).get("staff_ladder") or {}).get("items") or [])
+    ladder_role_ids = [item.get("roleId") for item in ladder_items if isinstance(item, dict)]
+
+    items = []
+    for member in guild.members:
+        if member.bot:
+            continue
+        roles = _member_staff_roles(member, ladder_role_ids)
+        if not roles:
+            continue
+        items.append({
+            "id": str(member.id),
+            "displayName": member.display_name,
+            "role": roles[0],
+            "avatar": member.display_avatar.with_size(256).url,
+        })
+
+    items.sort(key=lambda item: item["displayName"].casefold())
+    return _json(request, {"items": items})
+
+
 async def staff_list(request):
     user, guild, error = await _staff_manager(request)
     if error:
@@ -1256,6 +1289,7 @@ def register_staff_routes(app: web.Application):
     app.router.add_route("OPTIONS", "/api/dashboard/{tail:.*}", options_handler)
     app.router.add_get("/api/dashboard/build", api_build)
     app.router.add_get("/api/dashboard/access", dashboard_access)
+    app.router.add_get("/api/public/staff", public_staff_list)
     app.router.add_get("/api/dashboard/staff", staff_list)
     app.router.add_get("/api/dashboard/staff-actions-settings", staff_action_settings)
     app.router.add_put("/api/dashboard/staff-actions-settings", staff_action_settings)
