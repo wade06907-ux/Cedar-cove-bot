@@ -44,7 +44,6 @@ MONGODB_URI = os.getenv("MONGODB_URI")
 MONGODB_DB_NAME = (os.getenv("MONGODB_DATABASE") or "cedar_cove").strip() or "cedar_cove"
 MONGODB_DB = MONGODB_DB_NAME  # all bot modules share the Cedar Cove database
 
-GUILD_ID = os.getenv("GUILD_ID")
 PORT = int(os.getenv("PORT", "8080"))
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
@@ -3218,14 +3217,8 @@ class MegaBot(commands.Bot):
             logger.exception("Failed to start the health check server")
 
         try:
-            if GUILD_ID:
-                guild_obj = discord.Object(id=int(GUILD_ID))
-                self.tree.copy_global_to(guild=guild_obj)
-                synced = await self.tree.sync(guild=guild_obj)
-                logger.info("Synced %d command(s) to guild %s.", len(synced), GUILD_ID)
-            else:
-                synced = await self.tree.sync()
-                logger.info("Synced %d command(s) globally.", len(synced))
+            synced = await self.tree.sync()
+            logger.info("Synced %d command(s) globally.", len(synced))
         except Exception:
             logger.exception(
                 "Failed to sync application commands. The bot will still start, "
@@ -3247,6 +3240,7 @@ bot.ticket_open_view_cls = TicketOpenView
 bot.ticket_select_view_cls = TicketSelectView
 
 from staff_dashboard import setup_staff, register_staff_routes  # noqa: E402
+bot.auth_db = cedar_cove_mongo.get_default_database("authdb")
 setup_staff(bot, get_store, logger)
 
 _processing_members: set[tuple[int, int]] = set()
