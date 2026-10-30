@@ -805,8 +805,11 @@ async def dashboard_access(request):
     return _json(request, {"staffManagement": can_manage, "dashboardAccess": True})
 
 
-def _member_staff_roles(member):
-    return [r.name for r in sorted(member.roles, key=lambda role: role.position, reverse=True) if r.name.casefold() in {"owner", "co owner", "admin", "administrator", "mod", "moderator", "trial staff", "helper", "socials manager", "staff"}]
+def _member_staff_roles(member, configured_role_ids=None):
+    configured_role_ids = {str(value) for value in (configured_role_ids or [])}
+    recognized = {"owner", "co owner", "coowner", "admin", "administrator", "mod", "moderator", "trial staff", "helper", "socials manager", "staff"}
+    return [role.name for role in sorted(member.roles, key=lambda role: role.position, reverse=True)
+            if re.sub(r"[^a-z0-9]+", " ", role.name.casefold()).strip() in recognized or str(role.id) in configured_role_ids]
 
 
 def _loa_state(record, now=None):
@@ -876,7 +879,7 @@ async def staff_action_settings(request):
         return _json(request, {"error": "Invalid JSON body."}, 400)
     channels = {str(c.id) for c in guild.text_channels}
     roles = {str(r.id) for r in guild.roles}
-    for key in ("promotionChannelId", "retirementChannelId"):
+    for key in ("promotionChannelId", "retirementChannelId", "firedChannelId"):
         value = str(body.get(key) or "")
         if value and value not in channels:
             return _json(request, {"error": "Choose a valid text channel for " + key + "."}, 400)
@@ -889,6 +892,8 @@ async def staff_action_settings(request):
         "promotionMessage": str(body.get("promotionMessage") or "")[:1800],
         "retirementChannelId": str(body.get("retirementChannelId") or ""),
         "retirementMessage": str(body.get("retirementMessage") or "")[:1800],
+        "firedChannelId": str(body.get("firedChannelId") or ""),
+        "firedMessage": str(body.get("firedMessage") or "")[:1800],
         "memberRoleId": str(body.get("memberRoleId")),
         "retiredRoleId": str(body.get("retiredRoleId")),
     }
@@ -941,7 +946,9 @@ async def staff_action(request):
         records = {}
     record = records.setdefault(member_id, {"warnings": [], "strikes": [], "loa": None, "suspended": False})
     actor = {"id": str(user.get("discordId")), "username": str(user.get("discordUsername") or user.get("username") or "Staff manager")[:100]}
-    if action == "retire":
+    if action in {"retire", "fire", "fired"}:
+        if action in {"fire", "fired"} and not reason:
+            return _json(request, {"error": "A reason is required to fire a staff member."}, 400)
         config = await request.app["staff_store"].get(str(guild.id), {})
         settings = ((config.get("modules") or {}).get("staff_actions") or {})
         member_role = guild.get_role(int(settings.get("memberRoleId") or 0)) if str(settings.get("memberRoleId") or "").isdigit() else None
@@ -971,6 +978,26 @@ async def staff_action(request):
         except discord.HTTPException:
             return _json(request, {"error": "Discord could not update this member's roles."}, 502)
         record.setdefault("history", []).append({"action": "retire", "by": actor, "at": now, "reason": reason})
+        if action in {"fire", "fired"}:
+            if not STAFF_ACCOUNT_DELETE_SECRET:
+                return _json(request, {"error": "Account deletion is not configured. Set STAFF_ACCOUNT_DELETE_SECRET on both services."}, 503)
+            if str(member.id) == str(user.get("discordId")):
+                return _json(request, {"error": "You cannot fire yourself through staff management."}, 400)
+            try:
+                timeout = aiohttp.ClientTimeout(total=10)
+                async with aiohttp.ClientSession(timeout=timeout) as session:
+                    async with session.post(AUTH_API_URL + "/api/internal/staff/delete-account", json={"discordId": str(member.id)}, headers={"X-Staff-Manager-Key": STAFF_ACCOUNT_DELETE_SECRET}) as resp:
+                        deletion = await resp.json(content_type=None)
+                        if resp.status not in (200, 404):
+                            return _json(request, {"error": deletion.get("error", "Could not delete the linked website account.")}, resp.status)
+            except Exception:
+                request.app["staff_logger"].exception("Fired staff account deletion failed")
+                return _json(request, {"error": "Could not reach the verification service; Discord roles were changed but staff removal was not finalized."}, 502)
+            records.pop(member_id, None)
+            await store.set(str(guild.id), records)
+            await _send_staff_announcement(guild, settings.get("firedChannelId"), settings.get("firedMessage"), member, actor, reason, "fired")
+            await _audit(request, str(guild.id), user, "staff_fired", f"Fired {member_id}: {reason}")
+            return _json(request, {"ok": True, "message": "Staff member fired; linked account deletion checked.", "accountDeleted": bool(deletion.get("deleted"))})
         await _send_staff_announcement(guild, settings.get("retirementChannelId"), settings.get("retirementMessage"), member, actor, reason, "retired")
     elif action in {"promote", "demote"}:
         config = await request.app["staff_store"].get(str(guild.id), {})
