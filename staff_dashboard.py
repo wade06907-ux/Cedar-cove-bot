@@ -10,6 +10,7 @@ import os
 import asyncio
 import re
 import time
+from datetime import datetime, timezone
 import secrets
 from typing import Any
 from urllib.parse import urlparse
@@ -20,7 +21,6 @@ from aiohttp import web
 
 AUTH_API_URL = (os.getenv("AUTH_API_URL") or "https://verification-server-gjqt.onrender.com").rstrip("/")
 DASHBOARD_API_BUILD = "staff-manager-2026-10-26-logging-honeypot"
-STAFF_ACCOUNT_DELETE_SECRET = os.getenv("STAFF_ACCOUNT_DELETE_SECRET", "").strip()
 STAFF_ROLE_NAMES = {"owner": "Owner", "co owner": "Co Owner", "admin": "Admin", "administrator": "Admin"}
 
 
@@ -697,6 +697,66 @@ async def list_audit(request):
     return _json(request, {"items": list(reversed(records[-100:]))})
 
 
+async def _set_dashboard_access(request, *, allowed, discord_id=None, username=None):
+    auth_db = request.app["staff_bot"].auth_db
+    users = auth_db["users"]
+    sessions = auth_db["sessions"]
+
+    if discord_id:
+        if not str(discord_id).isdigit():
+            return {"found": False, "error": "Invalid Discord account ID."}
+        query = {"discordId": str(discord_id)}
+    elif username:
+        username = str(username).strip()
+        if not username or len(username) > 100:
+            return {"found": False, "error": "Provide a valid website username."}
+        query = {"usernameLower": username.casefold()}
+    else:
+        return {"found": False, "error": "Provide a website username or Discord account ID."}
+
+    user = await users.find_one(query, {"_id": 1, "username": 1, "discordId": 1})
+    if user is None and username:
+        user = await users.find_one(
+            {"username": {"$regex": "^" + re.escape(username) + "$", "$options": "i"}},
+            {"_id": 1, "username": 1, "discordId": 1},
+        )
+    if user is None:
+        return {"found": False}
+
+    await users.update_one(
+        {"_id": user["_id"]},
+        {"$set": {
+            "whitelisted": bool(allowed),
+            "dashboardAccessUpdatedAt": datetime.now(timezone.utc),
+        }},
+    )
+    if not allowed:
+        await sessions.delete_many({"userId": user["_id"]})
+
+    return {
+        "found": True,
+        "username": user.get("username", ""),
+        "discordId": user.get("discordId", str(discord_id or "")),
+        "whitelisted": bool(allowed),
+    }
+
+
+async def _delete_linked_dashboard_account(request, discord_id):
+    if not str(discord_id).isdigit():
+        return {"deleted": False, "error": "Invalid Discord account ID."}
+
+    auth_db = request.app["staff_bot"].auth_db
+    users = auth_db["users"]
+    sessions = auth_db["sessions"]
+    user = await users.find_one({"discordId": str(discord_id)}, {"_id": 1})
+    if user is None:
+        return {"deleted": False, "found": False}
+
+    await sessions.delete_many({"userId": user["_id"]})
+    await users.delete_one({"_id": user["_id"]})
+    return {"deleted": True, "found": True}
+
+
 async def _audit(request, gid, user, action, detail):
     store = request.app["audit_store"]
     records = await store.get(gid, [])
@@ -708,34 +768,31 @@ async def _audit(request, gid, user, action, detail):
 
 
 
-def _staff_guild(request, user=None):
+async def _staff_guild(request, user=None):
     bot = request.app["staff_bot"]
-    configured = os.getenv("GUILD_ID", "").strip()
-    if configured.isdigit():
-        return bot.get_guild(int(configured))
-
-    # Without GUILD_ID, prefer the server the signed-in Discord account owns
-    # or can manage, rather than relying only on role names existing server-wide.
     discord_id = str((user or {}).get("discordId") or "").strip()
+
     if discord_id.isdigit():
         for guild in bot.guilds:
             if str(getattr(guild, "owner_id", "")) == discord_id:
                 return guild
+
             member = guild.get_member(int(discord_id))
-            if member and _member_can_manage_staff(member):
+            if member is None:
+                try:
+                    member = await guild.fetch_member(int(discord_id))
+                except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                    continue
+
+            if _member_can_manage_staff(member):
                 return guild
 
-    allowed = {"owner", "co owner", "coowner", "admin", "administrator"}
-    return next(
-        (
-            guild for guild in bot.guilds
-            if any(
-                re.sub(r"[^a-z0-9]+", " ", role.name.casefold()).strip() in allowed
-                for role in guild.roles
-            )
-        ),
-        None,
-    )
+    # The primary website owner can use the only server connected to this bot.
+    # If the bot is in multiple servers, never guess which one they intended.
+    if str((user or {}).get("username", "")).casefold() == "glitchstorm7320" and len(bot.guilds) == 1:
+        return bot.guilds[0]
+
+    return None
 
 
 def _member_can_manage_staff(member):
@@ -757,9 +814,9 @@ async def _staff_manager(request):
             "error": "Your website account has not been approved for dashboard access."
         }, 403)
 
-    guild = _staff_guild(request, user)
+    guild = await _staff_guild(request, user)
     if guild is None:
-        return None, None, _json(request, {"error": "The bot could not find the configured Cedar Cove server. Set GUILD_ID in the bot service environment."}, 503)
+        return None, None, _json(request, {"error": "The bot could not identify a Cedar Cove server for your linked Discord account. Make sure your Discord account is linked and the bot is in the server."}, 503)
     if not _can_manage_staff(user, guild):
         return None, None, _json(request, {"error": "Staff Management is available only to Owner, Co Owner, and Admin roles."}, 403)
     return user, guild, None
@@ -960,9 +1017,6 @@ async def staff_action(request):
             return _json(request, {"error": "A reason is required to fire a staff member."}, 400)
         if str(member.id) == str(user.get("discordId")) and is_fired:
             return _json(request, {"error": "You cannot fire yourself through staff management."}, 400)
-        if not STAFF_ACCOUNT_DELETE_SECRET:
-            return _json(request, {"error": "Dashboard access revocation is not configured. Set STAFF_ACCOUNT_DELETE_SECRET on both services."}, 503)
-
         config = await request.app["staff_store"].get(str(guild.id), {})
         settings = ((config.get("modules") or {}).get("staff_actions") or {})
         member_role = guild.get_role(int(settings.get("memberRoleId") or 0)) if str(settings.get("memberRoleId") or "").isdigit() else None
@@ -986,20 +1040,13 @@ async def staff_action(request):
         # Revoke dashboard access and invalidate active website sessions,
         # but preserve the person's website account and its existing data.
         try:
-            timeout = aiohttp.ClientTimeout(total=10)
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.post(
-                    AUTH_API_URL + "/api/internal/staff/dashboard-access",
-                    json={"discordId": str(member.id), "allowed": False},
-                    headers={"X-Staff-Manager-Key": STAFF_ACCOUNT_DELETE_SECRET},
-                ) as resp:
-                    access_result = await resp.json(content_type=None)
-                    if resp.status not in (200, 404):
-                        return _json(request, {"error": access_result.get("error", "Could not revoke dashboard access.")}, resp.status)
-                    access_revoked = resp.status == 200 and access_result.get("whitelisted") is False
+            access_result = await _set_dashboard_access(
+                request, discord_id=str(member.id), allowed=False
+            )
+            access_revoked = bool(access_result.get("found") and access_result.get("whitelisted") is False)
         except Exception:
             request.app["staff_logger"].exception("Staff dashboard access revocation failed")
-            return _json(request, {"error": "Could not reach the verification service. No Discord roles were changed."}, 502)
+            return _json(request, {"error": "Could not update the linked website account. No Discord roles were changed."}, 502)
 
         try:
             await member.remove_roles(*staff_roles, reason=f"Staff {'fired' if is_fired else 'retired'} by {actor['username']}: {reason or 'No reason provided'}")
@@ -1107,7 +1154,7 @@ async def staff_action(request):
             return _json(request, {"error": "No recognized staff roles were found to remove."}, 400)
         if member_role is None:
             visible_roles = [role.name for role in guild.roles if "member" in normalize_role(role.name)]
-            return _json(request, {"error": f"The bot cannot find a Member role in the selected server '{guild.name}'. Roles containing 'member' visible to the bot: {', '.join(visible_roles) if visible_roles else 'none'}. Check GUILD_ID and make sure the bot is in the server that contains your Member role."}, 400)
+            return _json(request, {"error": f"The bot cannot find a Member role in the selected server '{guild.name}'. Roles containing 'member' visible to the bot: {', '.join(visible_roles) if visible_roles else 'none'}. Make sure the bot is in the correct server and can see its roles."}, 400)
         if not guild.me.guild_permissions.manage_roles:
             return _json(request, {"error": "The bot needs the Manage Roles permission."}, 403)
         if member_role >= guild.me.top_role or any((guild.get_role(int(role_id)) and guild.get_role(int(role_id)) >= guild.me.top_role) for role_id in staff_role_ids):
@@ -1149,35 +1196,27 @@ async def staff_action(request):
         target_username = str(body.get("username") or "").strip()
         if not target_username:
             return _json(request, {"error": "Enter the website username to update."}, 400)
-        if not STAFF_ACCOUNT_DELETE_SECRET:
-            return _json(request, {"error": "Dashboard access management is not configured. Set STAFF_ACCOUNT_DELETE_SECRET on both services."}, 503)
         allowed = action == "grant_dashboard_access"
-        timeout = aiohttp.ClientTimeout(total=10)
         try:
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.post(AUTH_API_URL + "/api/internal/staff/dashboard-access", json={"username": target_username, "allowed": allowed}, headers={"X-Staff-Manager-Key": STAFF_ACCOUNT_DELETE_SECRET}) as resp:
-                    payload = await resp.json(content_type=None)
-                    if resp.status != 200:
-                        return _json(request, {"error": payload.get("error", "Could not update dashboard access.")}, resp.status)
+            payload = await _set_dashboard_access(
+                request, username=target_username, allowed=allowed
+            )
+            if not payload.get("found"):
+                return _json(request, {"error": payload.get("error", "No linked website account was found.")}, 404)
         except Exception:
             request.app["staff_logger"].exception("Dashboard access update failed")
-            return _json(request, {"error": "Could not reach the verification service."}, 502)
+            return _json(request, {"error": "Could not update the linked website account in MongoDB."}, 502)
         record.setdefault("accountActions", []).append({"action": action, "username": payload.get("username", target_username), "by": actor, "at": now})
     elif action == "delete_account":
-        if not STAFF_ACCOUNT_DELETE_SECRET:
-            return _json(request, {"error": "Account deletion is not configured yet. Set STAFF_ACCOUNT_DELETE_SECRET on both the bot and verification services."}, 503)
         if str(member_id) == str(user.get("discordId")):
             return _json(request, {"error": "You cannot delete your own dashboard account here."}, 400)
-        timeout = aiohttp.ClientTimeout(total=10)
         try:
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.post(AUTH_API_URL + "/api/internal/staff/delete-account", json={"discordId": str(member.id)}, headers={"X-Staff-Manager-Key": STAFF_ACCOUNT_DELETE_SECRET}) as resp:
-                    payload = await resp.json(content_type=None)
-                    if resp.status != 200:
-                        return _json(request, {"error": payload.get("error", "Account deletion failed.")}, resp.status)
+            payload = await _delete_linked_dashboard_account(request, str(member.id))
+            if not payload.get("deleted"):
+                return _json(request, {"error": payload.get("error", "No linked website account was found.")}, 404)
         except Exception:
-            request.app["staff_logger"].exception("Staff dashboard account deletion request failed")
-            return _json(request, {"error": "Could not reach the verification service."}, 502)
+            request.app["staff_logger"].exception("Staff dashboard account deletion failed")
+            return _json(request, {"error": "Could not delete the linked website account from MongoDB."}, 502)
         record.setdefault("accountActions", []).append({"action": "dashboard_account_deleted", "by": actor, "at": now})
     else:
         return _json(request, {"error": "Unknown staff action."}, 400)
