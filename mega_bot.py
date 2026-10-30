@@ -41,7 +41,7 @@ DISCORD_TOKEN = os.getenv("DISCORD_BOT_TOKEN") or os.getenv("DISCORD_TOKEN") or 
 
 MONGODB_URI = os.getenv("MONGODB_URI")
 # Single shared database name for both subsystems (accepts either old name).
-MONGODB_DB_NAME = (os.getenv("MONGODB_DATABASE") or os.getenv("MONGODB_DB_NAME") or os.getenv("MONGODB_DB") or "cedar_cove").strip() or "cedar_cove"
+MONGODB_DB_NAME = (os.getenv("MONGODB_DATABASE") or "cedar_cove").strip() or "cedar_cove"
 MONGODB_DB = MONGODB_DB_NAME  # all bot modules share the Cedar Cove database
 
 GUILD_ID = os.getenv("GUILD_ID")
