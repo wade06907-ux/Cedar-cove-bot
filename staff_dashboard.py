@@ -8,6 +8,8 @@ bearer session token verified by the verification service.
 """
 import os
 import asyncio
+import base64
+import html
 import re
 import time
 from datetime import datetime, timezone
@@ -28,6 +30,12 @@ def setup_staff(bot, get_store, logger):
     bot.staff_dashboard_store = get_store("staff_dashboard_configs")
     bot.staff_dashboard_audit_store = get_store("staff_dashboard_audit")
     bot.role_nicknames_store = get_store("role_nicknames")
+    if not getattr(bot, "_github_staff_sync_listeners_added", False):
+        bot.add_listener(_github_staff_member_update, "on_member_update")
+        bot.add_listener(_github_staff_member_join, "on_member_join")
+        bot.add_listener(_github_staff_member_remove, "on_member_remove")
+        bot.add_listener(_github_staff_sync_on_ready, "on_ready")
+        bot._github_staff_sync_listeners_added = True
     if not getattr(bot, "_role_nickname_listener_added", False):
         bot.add_listener(_role_nickname_member_update, "on_member_update")
         bot._role_nickname_listener_added = True
@@ -866,6 +874,177 @@ def _member_staff_roles(member, configured_role_ids=None):
     recognized = {"owner", "co owner", "coowner", "admin", "administrator", "mod", "moderator", "trial staff", "helper", "socials manager", "staff"}
     return [role.name for role in sorted(member.roles, key=lambda role: role.position, reverse=True)
             if re.sub(r"[^a-z0-9]+", " ", role.name.casefold()).strip() in recognized or str(role.id) in configured_role_ids]
+
+
+GITHUB_API_BASE = "https://api.github.com"
+GITHUB_STAFF_REPOSITORY = (os.getenv("GITHUB_STAFF_REPOSITORY") or "wade06907-ux/Cedarcoveweb").strip()
+GITHUB_STAFF_BRANCH = (os.getenv("GITHUB_STAFF_BRANCH") or "main").strip()
+GITHUB_STAFF_HTML_FILE = (os.getenv("GITHUB_STAFF_HTML_FILE") or "index.html").strip().lstrip("/")
+GITHUB_TOKEN = (os.getenv("GITHUB_TOKEN") or "").strip()
+_GITHUB_STAFF_SYNC_LOCK = asyncio.Lock()
+
+
+def _github_staff_guild(bot):
+    matches = [guild for guild in bot.guilds if "cedar cove" in guild.name.casefold()]
+    if matches:
+        return sorted(matches, key=lambda item: (item.name.casefold() != "cedar cove", item.name.casefold()))[0]
+    return bot.guilds[0] if len(bot.guilds) == 1 else None
+
+
+async def _github_staff_items(bot, guild):
+    config = await bot.staff_dashboard_store.get(str(guild.id), {})
+    ladder = (((config.get("modules") or {}).get("staff_ladder") or {}).get("items") or [])
+    ladder_ids = [item.get("roleId") for item in ladder if isinstance(item, dict)]
+    items = []
+    for member in guild.members:
+        if member.bot:
+            continue
+        roles = _member_staff_roles(member, ladder_ids)
+        if not roles:
+            continue
+        items.append({
+            "id": str(member.id),
+            "name": member.display_name,
+            "role": roles[0],
+            "avatar": str(member.display_avatar.with_size(256).url),
+        })
+    items.sort(key=lambda item: item["name"].casefold())
+    return items
+
+
+def _github_staff_cards(items):
+    if not items:
+        return '<p class="staff-note">Our staff team is getting ready. Check back soon!</p>'
+    cards = []
+    for item in items:
+        name = html.escape(str(item["name"]), quote=True)
+        role = html.escape(str(item["role"]), quote=True)
+        avatar = html.escape(str(item["avatar"]), quote=True)
+        cards.append(
+            '      <div class="staff-card">\\n'
+            f'        <div class="staff-avatar"><img src="{avatar}" alt="{name} avatar"></div>\\n'
+            f'        <h3>{name}</h3>\\n'
+            f'        <span class="staff-role">{role}</span>\\n'
+            '      </div>'
+        )
+    return "\\n".join(cards)
+
+
+async def sync_github_staff_website(bot, reason="staff roster update"):
+    if not GITHUB_TOKEN:
+        return False
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", GITHUB_STAFF_REPOSITORY):
+        bot.staff_dashboard_logger.error("GitHub staff sync skipped: GITHUB_STAFF_REPOSITORY must be owner/repository.")
+        return False
+
+    guild = _github_staff_guild(bot)
+    if guild is None:
+        bot.staff_dashboard_logger.warning("GitHub staff sync skipped: Cedar Cove Discord server could not be identified.")
+        return False
+
+    async with _GITHUB_STAFF_SYNC_LOCK:
+        try:
+            items = await _github_staff_items(bot, guild)
+            cards = _github_staff_cards(items)
+            headers = {
+                "Authorization": f"Bearer {GITHUB_TOKEN}",
+                "Accept": "application/vnd.github+json",
+                "X-GitHub-Api-Version": "2022-11-28",
+            }
+            encoded_path = __import__("urllib.parse", fromlist=["quote"]).quote(GITHUB_STAFF_HTML_FILE, safe="/")
+            url = f"{GITHUB_API_BASE}/repos/{GITHUB_STAFF_REPOSITORY}/contents/{encoded_path}"
+            timeout = aiohttp.ClientTimeout(total=35)
+
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(url, headers=headers, params={"ref": GITHUB_STAFF_BRANCH}) as response:
+                    payload = await response.json(content_type=None)
+                    if response.status != 200:
+                        bot.staff_dashboard_logger.error(
+                            "GitHub staff sync could not read %s/%s (%s): %s",
+                            GITHUB_STAFF_REPOSITORY, GITHUB_STAFF_HTML_FILE,
+                            response.status, str(payload)[:500],
+                        )
+                        return False
+
+                try:
+                    current_html = base64.b64decode(payload["content"]).decode("utf-8")
+                except Exception:
+                    bot.staff_dashboard_logger.exception("GitHub staff sync received unreadable HTML content.")
+                    return False
+
+                start_marker = "<!-- BOT_STAFF_CARDS_START -->"
+                end_marker = "<!-- BOT_STAFF_CARDS_END -->"
+                if current_html.count(start_marker) != 1 or current_html.count(end_marker) != 1:
+                    bot.staff_dashboard_logger.error(
+                        "GitHub staff sync stopped: %s must contain exactly one pair of bot staff-card markers.",
+                        GITHUB_STAFF_HTML_FILE,
+                    )
+                    return False
+                start = current_html.index(start_marker) + len(start_marker)
+                end = current_html.index(end_marker)
+                if end < start:
+                    bot.staff_dashboard_logger.error("GitHub staff sync stopped: staff-card markers are out of order.")
+                    return False
+
+                updated_html = current_html[:start] + "\\n" + cards + "\\n    " + current_html[end:]
+                if updated_html == current_html:
+                    return True
+
+                body = {
+                    "message": f"Update Cedar Cove staff cards ({reason})",
+                    "content": base64.b64encode(updated_html.encode("utf-8")).decode("ascii"),
+                    "sha": payload["sha"],
+                    "branch": GITHUB_STAFF_BRANCH,
+                }
+                async with session.put(url, headers=headers, json=body) as response:
+                    result = await response.json(content_type=None)
+                    if response.status not in (200, 201):
+                        bot.staff_dashboard_logger.error(
+                            "GitHub staff sync could not commit website update (%s): %s",
+                            response.status, str(result)[:500],
+                        )
+                        return False
+
+            bot.staff_dashboard_logger.info(
+                "Updated %d Cedar Cove staff cards in %s/%s:%s (%s).",
+                len(items), GITHUB_STAFF_REPOSITORY, GITHUB_STAFF_BRANCH,
+                GITHUB_STAFF_HTML_FILE, result.get("commit", {}).get("sha", "commit created"),
+            )
+            return True
+        except Exception:
+            bot.staff_dashboard_logger.exception("GitHub staff website update failed.")
+            return False
+
+
+async def _github_staff_sync_on_ready():
+    bot = _configured_bot
+    if bot is None or getattr(bot, "_github_staff_initial_sync_started", False):
+        return
+    bot._github_staff_initial_sync_started = True
+    await bot.wait_until_ready()
+    await sync_github_staff_website(bot, "bot startup")
+
+
+async def _github_staff_member_update(before, after):
+    if before.bot:
+        return
+    changed = (
+        before.roles != after.roles
+        or before.display_name != after.display_name
+        or str(before.display_avatar.url) != str(after.display_avatar.url)
+    )
+    if changed:
+        await sync_github_staff_website(after._state._get_client(), "member profile or staff role changed")
+
+
+async def _github_staff_member_join(member):
+    if not member.bot:
+        await sync_github_staff_website(member._state._get_client(), "member joined")
+
+
+async def _github_staff_member_remove(member):
+    if not member.bot:
+        await sync_github_staff_website(member._state._get_client(), "member left")
 
 
 def _loa_state(record, now=None):
