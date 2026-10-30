@@ -40,7 +40,7 @@ load_dotenv()
 DISCORD_TOKEN = os.getenv("DISCORD_BOT_TOKEN") or os.getenv("DISCORD_TOKEN") or os.getenv("TOKEN")
 
 MONGODB_URI = os.getenv("MONGODB_URI")
-# Single shared database name for both subsystems (accepts either old name).
+# All bot modules share this database; the verification server uses its separate authdb.
 MONGODB_DB_NAME = (os.getenv("MONGODB_DATABASE") or "cedar_cove").strip() or "cedar_cove"
 MONGODB_DB = MONGODB_DB_NAME  # all bot modules share the Cedar Cove database
 
