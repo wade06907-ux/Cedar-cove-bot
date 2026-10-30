@@ -1018,10 +1018,10 @@ async def staff_action(request):
         if is_fired:
             await _send_staff_announcement(guild, settings.get("firedChannelId"), settings.get("firedMessage"), member, actor, reason, "fired")
             await _audit(request, str(guild.id), user, "staff_fired", f"Fired {member_id}: {reason}")
-            return _json(request, {"ok": True, "message": "Staff member fired; dashboard access revoked and website account preserved.", "dashboardAccessRevoked": access_revoked})
+            return _json(request, {"ok": True, "message": ("Staff member fired; dashboard access revoked and website account preserved." if access_revoked else "Staff member fired; no linked website account was found to revoke."), "dashboardAccessRevoked": access_revoked})
         await _send_staff_announcement(guild, settings.get("retirementChannelId"), settings.get("retirementMessage"), member, actor, reason, "retired")
         await _audit(request, str(guild.id), user, "staff_retired", f"Retired {member_id}: {reason or 'No reason provided'}")
-        return _json(request, {"ok": True, "message": "Staff member retired; dashboard access revoked and website account preserved.", "dashboardAccessRevoked": access_revoked})
+        return _json(request, {"ok": True, "message": ("Staff member retired; dashboard access revoked and website account preserved." if access_revoked else "Staff member retired; no linked website account was found to revoke."), "dashboardAccessRevoked": access_revoked})
     elif action in {"promote", "demote"}:
         config = await request.app["staff_store"].get(str(guild.id), {})
         ladder = (((config.get("modules") or {}).get("staff_ladder") or {}).get("items") or [])
