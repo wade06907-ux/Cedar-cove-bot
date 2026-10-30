@@ -862,6 +862,51 @@ async def staff_detail(request):
     return _json(request, {"member": {"id": str(member.id), "username": member.name, "displayName": member.display_name, "roles": _member_staff_roles(member)}, "record": item, "loaStatus": _loa_state(item)})
 
 
+async def staff_action_settings(request):
+    user, guild, error = await _staff_manager(request)
+    if error:
+        return error
+    config = await request.app["staff_store"].get(str(guild.id), {})
+    settings = ((config.get("modules") or {}).get("staff_actions") or {})
+    if request.method == "GET":
+        return _json(request, {"settings": settings})
+    try:
+        body = await request.json()
+    except Exception:
+        return _json(request, {"error": "Invalid JSON body."}, 400)
+    channels = {str(c.id) for c in guild.text_channels}
+    roles = {str(r.id) for r in guild.roles}
+    for key in ("promotionChannelId", "retirementChannelId"):
+        value = str(body.get(key) or "")
+        if value and value not in channels:
+            return _json(request, {"error": "Choose a valid text channel for " + key + "."}, 400)
+    for key in ("memberRoleId", "retiredRoleId"):
+        value = str(body.get(key) or "")
+        if not value or value not in roles:
+            return _json(request, {"error": "Choose a valid Discord role for " + key + "."}, 400)
+    settings = {
+        "promotionChannelId": str(body.get("promotionChannelId") or ""),
+        "promotionMessage": str(body.get("promotionMessage") or "")[:1800],
+        "retirementChannelId": str(body.get("retirementChannelId") or ""),
+        "retirementMessage": str(body.get("retirementMessage") or "")[:1800],
+        "memberRoleId": str(body.get("memberRoleId")),
+        "retiredRoleId": str(body.get("retiredRoleId")),
+    }
+    config.setdefault("modules", {})["staff_actions"] = settings
+    await request.app["staff_store"].set(str(guild.id), config)
+    return _json(request, {"ok": True, "settings": settings})
+
+
+async def _send_staff_announcement(guild, channel_id, template, member, actor, reason, action, old_rank="", new_rank=""):
+    channel = guild.get_channel(int(channel_id)) if str(channel_id).isdigit() else None
+    if not isinstance(channel, discord.TextChannel) or not template:
+        return
+    message = template.replace("{member}", member.mention).replace("{username}", member.display_name)
+    message = message.replace("{actor}", str(actor.get("username") or "Staff")).replace("{reason}", reason or "No reason provided")
+    message = message.replace("{action}", action).replace("{old_rank}", old_rank).replace("{new_rank}", new_rank)
+    await channel.send(message[:2000], allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False))
+
+
 async def staff_action(request):
     user, guild, error = await _staff_manager(request)
     if error:
@@ -892,7 +937,38 @@ async def staff_action(request):
         records = {}
     record = records.setdefault(member_id, {"warnings": [], "strikes": [], "loa": None, "suspended": False})
     actor = {"id": str(user.get("discordId")), "username": str(user.get("discordUsername") or user.get("username") or "Staff manager")[:100]}
-    if action in {"promote", "demote"}:
+    if action == "retire":
+        config = await request.app["staff_store"].get(str(guild.id), {})
+        settings = ((config.get("modules") or {}).get("staff_actions") or {})
+        member_role = guild.get_role(int(settings.get("memberRoleId") or 0)) if str(settings.get("memberRoleId") or "").isdigit() else None
+        retired_role = guild.get_role(int(settings.get("retiredRoleId") or 0)) if str(settings.get("retiredRoleId") or "").isdigit() else None
+        if not member_role or not retired_role:
+            return _json(request, {"error": "Configure the Member and Retired from Staff roles in Staff Management settings first."}, 400)
+        ladder = (((config.get("modules") or {}).get("staff_ladder") or {}).get("items") or [])
+        staff_roles = {role for role in member.roles if re.sub(r"[^a-z0-9]+", " ", role.name.casefold()).strip() in {"owner", "co owner", "coowner", "admin", "administrator", "mod", "moderator", "trial staff", "helper", "socials manager", "staff"}}
+        for item in ladder:
+            rid = str(item.get("roleId") or "")
+            role = guild.get_role(int(rid)) if rid.isdigit() else None
+            if role and role in member.roles:
+                staff_roles.add(role)
+        if not staff_roles:
+            return _json(request, {"error": "This member has no recognized staff role to retire."}, 400)
+        if not guild.me.guild_permissions.manage_roles:
+            return _json(request, {"error": "The bot needs Manage Roles permission."}, 403)
+        if any(role >= guild.me.top_role for role in [member_role, retired_role, *staff_roles]):
+            return _json(request, {"error": "Move the bot's highest role above the Member, Retired from Staff, and staff roles."}, 403)
+        try:
+            await member.remove_roles(*staff_roles, reason=f"Staff retired by {actor['username']}: {reason or 'No reason provided'}")
+            add_roles = [role for role in (member_role, retired_role) if role not in member.roles]
+            if add_roles:
+                await member.add_roles(*add_roles, reason=f"Staff retired by {actor['username']}")
+        except discord.Forbidden:
+            return _json(request, {"error": "Discord denied the role change. Check Manage Roles and role hierarchy."}, 403)
+        except discord.HTTPException:
+            return _json(request, {"error": "Discord could not update this member's roles."}, 502)
+        record.setdefault("history", []).append({"action": "retire", "by": actor, "at": now, "reason": reason})
+        await _send_staff_announcement(guild, settings.get("retirementChannelId"), settings.get("retirementMessage"), member, actor, reason, "retired")
+    elif action in {"promote", "demote"}:
         config = await request.app["staff_store"].get(str(guild.id), {})
         ladder = (((config.get("modules") or {}).get("staff_ladder") or {}).get("items") or [])
         if not ladder:
@@ -925,6 +1001,8 @@ async def staff_action(request):
         except discord.HTTPException:
             return _json(request, {"error": "Discord could not update this staff member's role."}, 502)
         record.setdefault("history", []).append({"action": action, "rank": target_item.get("name", target_role.name), "by": actor, "at": now, "reason": reason})
+        settings = (((config.get("modules") or {}).get("staff_actions") or {}))
+        await _send_staff_announcement(guild, settings.get("promotionChannelId"), settings.get("promotionMessage"), member, actor, reason, action, new_rank=target_item.get("name", target_role.name))
     elif action in {"warn", "strike"}:
         if not reason:
             return _json(request, {"error": "Enter a reason for this action."}, 400)
@@ -1081,6 +1159,8 @@ def register_staff_routes(app: web.Application):
     app.router.add_get("/api/dashboard/build", api_build)
     app.router.add_get("/api/dashboard/access", dashboard_access)
     app.router.add_get("/api/dashboard/staff", staff_list)
+    app.router.add_get("/api/dashboard/staff-actions-settings", staff_action_settings)
+    app.router.add_put("/api/dashboard/staff-actions-settings", staff_action_settings)
     app.router.add_get("/api/dashboard/staff/{member_id}", staff_detail)
     app.router.add_post("/api/dashboard/staff/{member_id}/action", staff_action)
     app.router.add_get("/api/dashboard/status", api_status)
