@@ -860,12 +860,15 @@ async def staff_detail(request):
         return _json(request, {"error": "Staff member is no longer in the server."}, 404)
     except discord.HTTPException:
         return _json(request, {"error": "Discord could not load this member. Try again."}, 502)
-    roles = _member_staff_roles(member)
+    staff_config = await request.app["staff_store"].get(str(guild.id), {})
+    ladder_items = (((staff_config.get("modules") or {}).get("staff_ladder") or {}).get("items") or [])
+    ladder_role_ids = [entry.get("roleId") for entry in ladder_items if isinstance(entry, dict)]
+    roles = _member_staff_roles(member, ladder_role_ids)
     record = await request.app["staff_management_store"].get(str(guild.id), {})
     item = record.get(str(member.id), {}) if isinstance(record, dict) else {}
     if member.bot or (not roles and not item.get("suspended")):
         return _json(request, {"error": "Only current or suspended human staff members can be managed here."}, 403)
-    return _json(request, {"member": {"id": str(member.id), "username": member.name, "displayName": member.display_name, "roles": _member_staff_roles(member)}, "record": item, "loaStatus": _loa_state(item)})
+    return _json(request, {"member": {"id": str(member.id), "username": member.name, "displayName": member.display_name, "roles": _member_staff_roles(member, ladder_role_ids)}, "record": item, "loaStatus": _loa_state(item)})
 
 
 async def staff_action_settings(request):
@@ -932,9 +935,12 @@ async def staff_action(request):
         return _json(request, {"error": "Staff member is no longer in the server."}, 404)
     except discord.HTTPException:
         return _json(request, {"error": "Discord could not load this member. Try again."}, 502)
+    staff_config_for_check = await request.app["staff_store"].get(str(guild.id), {})
+    ladder_for_check = (((staff_config_for_check.get("modules") or {}).get("staff_ladder") or {}).get("items") or [])
+    ladder_role_ids_for_check = [entry.get("roleId") for entry in ladder_for_check if isinstance(entry, dict)]
     existing_records = await request.app["staff_management_store"].get(str(guild.id), {})
     existing_record = existing_records.get(member_id, {}) if isinstance(existing_records, dict) else {}
-    if member.bot or (not _member_staff_roles(member) and not existing_record.get("suspended")):
+    if member.bot or (not _member_staff_roles(member, ladder_role_ids_for_check) and not existing_record.get("suspended")):
         return _json(request, {"error": "Only current or suspended human staff members can be managed here."}, 403)
     try:
         body = await request.json()
