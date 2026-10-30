@@ -904,7 +904,11 @@ async def _send_staff_announcement(guild, channel_id, template, member, actor, r
     message = template.replace("{member}", member.mention).replace("{username}", member.display_name)
     message = message.replace("{actor}", str(actor.get("username") or "Staff")).replace("{reason}", reason or "No reason provided")
     message = message.replace("{action}", action).replace("{old_rank}", old_rank).replace("{new_rank}", new_rank)
-    await channel.send(message[:2000], allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False))
+    try:
+        await channel.send(message[:2000], allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False))
+    except (discord.Forbidden, discord.HTTPException):
+        # Role changes remain successful even if the announcement channel is unavailable.
+        return
 
 
 async def staff_action(request):
