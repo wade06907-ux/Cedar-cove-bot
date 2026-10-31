@@ -45,7 +45,7 @@ def setup_staff(bot, get_store, logger):
         bot._welcome_leave_listeners_added = True
     bot.staff_dashboard_logger = logger
     listeners = [
-        (_dashboard_log_message_delete, 'on_message_delete'), (_dashboard_log_message_edit, 'on_message_edit'),
+        (_dashboard_log_raw_message_delete, 'on_raw_message_delete'), (_dashboard_log_message_edit, 'on_message_edit'),
         (_dashboard_log_channel_create, 'on_guild_channel_create'), (_dashboard_log_channel_delete, 'on_guild_channel_delete'),
         (_dashboard_log_channel_update, 'on_guild_channel_update'), (_dashboard_log_role_create, 'on_guild_role_create'),
         (_dashboard_log_role_delete, 'on_guild_role_delete'), (_dashboard_log_role_update, 'on_guild_role_update'),
@@ -136,8 +136,23 @@ async def _dashboard_honeypot_message(message):
         log = getattr(bot, 'staff_dashboard_logger', None)
         if log: log.warning('Honeypot punishment failed: %s', exc)
 
-async def _dashboard_log_message_delete(message):
-    if message.guild and not message.author.bot: await _log_event(message.guild, 'messageDelete', 'Message deleted', 'Author: {} ({})\nChannel: {}\nContent: {}'.format(message.author, message.author.id, message.channel.mention, (message.content or '[no text]')[:2500]))
+async def _dashboard_log_raw_message_delete(payload):
+    state = getattr(payload, '_state', None)
+    bot = state._get_client() if state else None
+    guild = bot.get_guild(payload.guild_id) if bot and payload.guild_id else None
+    if guild is None:
+        return
+    cached = getattr(payload, 'cached_message', None)
+    if cached is not None and cached.author.bot:
+        return
+    channel = guild.get_channel(payload.channel_id)
+    channel_name = channel.mention if channel else 'channel ' + str(payload.channel_id)
+    if cached is not None:
+        description = 'Author: {} ({})\\nChannel: {}\\nMessage ID: {}\\nContent: {}'.format(cached.author, cached.author.id, channel_name, payload.message_id, (cached.content or '[no text]')[:2500])
+    else:
+        description = 'Channel: {}\\nMessage ID: {}\\nContent unavailable (message was not cached by Discord.py).'.format(channel_name, payload.message_id)
+    await _log_event(guild, 'messageDelete', 'Message deleted', description)
+
 async def _dashboard_log_message_edit(before, after):
     if after.guild and not after.author.bot and before.content != after.content: await _log_event(after.guild, 'messageEdit', 'Message edited', 'Author: {} ({})\nChannel: {}\nBefore: {}\nAfter: {}'.format(after.author, after.author.id, after.channel.mention, (before.content or '[empty]')[:1200], (after.content or '[empty]')[:1200]))
 async def _dashboard_log_channel_create(channel):
