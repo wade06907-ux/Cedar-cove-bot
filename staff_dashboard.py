@@ -390,6 +390,18 @@ async def get_config(request):
     if request.app["staff_bot"].get_guild(int(gid)) is None:
         return _json(request, {"error": "The bot is not in that server."}, 404)
     config = await request.app["staff_store"].get(gid, {})
+    if not isinstance(config, dict):
+        config = {}
+    modules = config.setdefault("modules", {})
+    logging_settings = modules.setdefault("logging", {})
+    for event_key in (
+        "messageDelete", "messageEdit", "channelCreate", "channelDelete",
+        "channelUpdate", "roleCreate", "roleDelete", "roleUpdate",
+        "memberJoin", "memberLeave", "memberBan", "memberUnban",
+        "nicknameUpdate", "memberRoleUpdate",
+    ):
+        logging_settings[event_key + "Enabled"] = True
+    await request.app["staff_store"].set(gid, config)
     return _json(request, {"guildId": gid, "config": config})
 
 
