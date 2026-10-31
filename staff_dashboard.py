@@ -433,6 +433,19 @@ async def save_config(request):
                 if isinstance(value, (str, int, float, bool)) or value is None:
                     entry[str(key)[:60]] = value if not isinstance(value, str) else value[:4000]
             clean["modules"][str(name)] = entry
+
+        # The logging panel should never silently turn its audit events off.
+        # Keep every event enabled in storage, even when an older dashboard
+        # payload omits a toggle or sends a stale false value.
+        logging_settings = clean["modules"].setdefault("logging", {})
+        for event_key in (
+            "messageDelete", "messageEdit", "channelCreate", "channelDelete",
+            "channelUpdate", "roleCreate", "roleDelete", "roleUpdate",
+            "memberJoin", "memberLeave", "memberBan", "memberUnban",
+            "nicknameUpdate", "memberRoleUpdate",
+        ):
+            logging_settings[event_key + "Enabled"] = True
+
         await request.app["staff_store"].set(gid, clean)
         await _audit(request, gid, user, "save_config", "Dashboard configuration saved")
         return _json(request, {"ok": True, "config": clean})
