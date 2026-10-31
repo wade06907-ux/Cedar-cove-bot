@@ -397,12 +397,23 @@ async def save_config(request):
             return _json(request, {"error": "Configuration server ID does not match the request."}, 400)
         if len(str(config)) > 100_000:
             return _json(request, {"error": "Configuration is too large."}, 413)
-        # Only retain expected top-level fields; no secrets are accepted.
-        clean = {"guildId": gid, "timezone": str(config.get("timezone", ""))[:100], "modules": {}}
+        # Merge submitted settings into the existing guild config. Some dashboard
+        # panels submit only their own module; replacing the whole document here
+        silently erased every other saved module (including logging/welcome).
+        existing = await request.app["staff_store"].get(gid, {})
+        existing_modules = existing.get("modules") if isinstance(existing, dict) else {}
+        if not isinstance(existing_modules, dict):
+            existing_modules = {}
+        clean = {
+            "guildId": gid,
+            "timezone": str(config.get("timezone", existing.get("timezone", "")))[:100],
+            "modules": {str(k): dict(v) for k, v in existing_modules.items()
+                        if re.fullmatch(r"[a-zA-Z0-9_-]{1,40}", str(k)) and isinstance(v, dict)},
+        }
         for name, settings in config["modules"].items():
             if not re.fullmatch(r"[a-zA-Z0-9_-]{1,40}", str(name)) or not isinstance(settings, dict):
                 continue
-            entry = {}
+            entry = dict(clean["modules"].get(str(name), {}))
             for key, value in settings.items():
                 if isinstance(value, (str, int, float, bool)) or value is None:
                     entry[str(key)[:60]] = value if not isinstance(value, str) else value[:4000]
