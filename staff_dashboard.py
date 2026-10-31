@@ -399,7 +399,7 @@ async def save_config(request):
             return _json(request, {"error": "Configuration is too large."}, 413)
         # Merge submitted settings into the existing guild config. Some dashboard
         # panels submit only their own module; replacing the whole document here
-        silently erased every other saved module (including logging/welcome).
+        # silently erased every other saved module (including logging/welcome).
         existing = await request.app["staff_store"].get(gid, {})
         existing_modules = existing.get("modules") if isinstance(existing, dict) else {}
         if not isinstance(existing_modules, dict):
