@@ -153,12 +153,14 @@ class RoleConnectionStorage:
         }
         if self._use_mongo:
             await self._db.connections.insert_one(dict(doc))
+            logger.info("MONGO SAVE | connections | action=create | guild=%s | connection=%s", guild_id, connection_id)
         else:
             async with self._lock:
                 data = self._read_json()
                 block = self._get_guild_block(data, guild_id)
                 block["connections"].append(doc)
                 self._write_json(data)
+            logger.info("FILE SAVE | role_connections.json | action=create | guild=%s | connection=%s", guild_id, connection_id)
         return connection_id
 
     async def update_connection(self, guild_id: int, connection_id: str, updates: dict) -> bool:
@@ -166,6 +168,7 @@ class RoleConnectionStorage:
             result = await self._db.connections.update_one(
                 {"guild_id": guild_id, "id": connection_id}, {"$set": updates}
             )
+            logger.info("MONGO SAVE | connections | action=update | guild=%s | connection=%s | matched=%s", guild_id, connection_id, bool(result.matched_count))
             return result.matched_count > 0
         async with self._lock:
             data = self._read_json()
@@ -182,6 +185,7 @@ class RoleConnectionStorage:
             result = await self._db.connections.delete_one(
                 {"guild_id": guild_id, "id": connection_id}
             )
+            logger.info("MONGO DELETE | connections | guild=%s | connection=%s | deleted=%s", guild_id, connection_id, bool(result.deleted_count))
             return result.deleted_count > 0
         async with self._lock:
             data = self._read_json()
