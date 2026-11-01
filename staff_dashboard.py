@@ -77,13 +77,28 @@ async def _dashboard_module(bot, guild_id, name):
 async def _log_event(guild, event_key, title, description):
     bot = guild._state._get_client()
     settings = await _dashboard_module(bot, guild.id, 'logging')
-    if not settings.get(event_key + 'Enabled'): return
-    channel_id = str(settings.get(event_key + 'ChannelId') or '')
+    logger = getattr(bot, 'staff_dashboard_logger', None) or __import__('logging').getLogger('mega_bot.audit')
+    if not settings.get(event_key + 'Enabled'):
+        logger.info('Audit event skipped: guild=%s event=%s disabled in config', guild.id, event_key)
+        return
+    channel_id = str(settings.get(event_key + 'ChannelId') or settings.get('channelId') or '')
     channel = guild.get_channel(int(channel_id)) if channel_id.isdigit() else None
-    if not isinstance(channel, discord.TextChannel): return
+    if not isinstance(channel, discord.TextChannel):
+        logger.warning('Audit event has no valid destination: guild=%s event=%s configured_channel=%r', guild.id, event_key, channel_id)
+        return
+    me = guild.me
+    perms = channel.permissions_for(me) if me else None
+    if not perms or not perms.send_messages or not perms.embed_links:
+        logger.warning('Audit destination permission issue: guild=%s event=%s channel=%s send_messages=%s embed_links=%s', guild.id, event_key, channel.id, bool(perms and perms.send_messages), bool(perms and perms.embed_links))
+        return
     embed = discord.Embed(title=title, description=str(description)[:4000], color=discord.Color.blurple(), timestamp=discord.utils.utcnow())
-    try: await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
-    except (discord.Forbidden, discord.HTTPException): pass
+    try:
+        await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+        logger.info('Audit event delivered: guild=%s event=%s channel=%s', guild.id, event_key, channel.id)
+    except discord.Forbidden as exc:
+        logger.error('Audit event forbidden: guild=%s event=%s channel=%s error=%s', guild.id, event_key, channel.id, exc)
+    except discord.HTTPException as exc:
+        logger.error('Audit event failed: guild=%s event=%s channel=%s status=%s error=%s', guild.id, event_key, channel.id, exc.status, exc)
 
 async def _dashboard_honeypot_message(message):
     if message.guild is None or message.author.bot or not isinstance(message.author, discord.Member): return
