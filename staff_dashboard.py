@@ -160,13 +160,27 @@ async def _audit_log_reader_loop(bot):
                         embed.add_field(name="Reason", value=str(entry.reason)[:1024], inline=False)
 
                     details = []
-                    for change in getattr(entry, "changes", []) or []:
-                        key = str(getattr(change, "key", ""))
-                        before = getattr(change, "before", None)
-                        after = getattr(change, "after", None)
-                        label = change_labels.get(key, key.replace("_", " ").title() or "Updated")
-                        if before is not None or after is not None:
+                    changes = getattr(entry, "changes", None)
+                    # discord.py exposes AuditLogChanges as an object, not an iterable.
+                    # Read its known before/after attributes safely.
+                    change_keys = (
+                        "name", "nick", "topic", "bitrate", "slowmode_delay", "rtc_region",
+                        "nsfw", "hoist", "mentionable", "permissions", "color", "position",
+                        "communication_disabled_until", "deaf", "mute", "roles", "channel",
+                        "overwrites", "type", "icon", "owner_id", "afk_timeout",
+                        "verification_level", "default_notifications", "content_filter",
+                    )
+                    if changes is not None:
+                        for key in change_keys:
+                            before = getattr(getattr(changes, "before", None), key, None)
+                            after = getattr(getattr(changes, "after", None), key, None)
+                            if before is None and after is None:
+                                continue
+                            label = change_labels.get(key, key.replace("_", " ").title() or "Updated")
                             details.append(f"**{label}:** {str(before)[:350] if before is not None else '—'} → {str(after)[:350] if after is not None else '—'}")
+                        role_changes = getattr(changes, "roles", None)
+                        if role_changes:
+                            details.append("**Roles:** " + str(role_changes)[:700])
                     if details:
                         embed.add_field(name="Changes", value="\\n".join(details)[:1024], inline=False)
                     if guild.icon:
