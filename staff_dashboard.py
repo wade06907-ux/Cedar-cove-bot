@@ -240,7 +240,9 @@ async def _dashboard_log_raw_message_delete(payload):
     if cached is not None:
         description = 'Author: {} ({})\\nChannel: {}\\nMessage ID: {}\\nContent: {}'.format(cached.author, cached.author.id, channel_name, payload.message_id, (cached.content or '[no text]')[:2500])
     else:
-        description = 'Channel: {}\\nMessage ID: {}\\nContent unavailable (message was not cached by Discord.py).'.format(channel_name, payload.message_id)
+        description = 'Message deleted\\nChannel: {}\\nMessage ID: {}\\nContent was not cached; Discord.py cannot recover it.'.format(channel_name, payload.message_id)
+    log = getattr(bot, 'staff_dashboard_logger', None) or __import__('logging').getLogger('mega_bot.audit')
+    log.info('MESSAGE DELETE EVENT RECEIVED | guild=%s | channel=%s | message=%s | cached=%s', guild.id, payload.channel_id, payload.message_id, cached is not None)
     await _log_event(guild, 'messageDelete', 'Message deleted', description)
 
 async def _dashboard_log_message_edit(before, after):
