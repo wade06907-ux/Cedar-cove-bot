@@ -3303,6 +3303,137 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
 
 
 
+# Security controls: channel lockdown + anti-raid
+security_settings = cedar_cove_db["security_settings"]
+lockdown_states = cedar_cove_db["lockdown_states"]
+LOCKDOWN_PERMISSION_FIELDS = ("send_messages", "add_reactions", "send_messages_in_threads", "create_public_threads", "create_private_threads")
+
+async def _lock_text_channel(channel, reason):
+    everyone = channel.guild.default_role
+    overwrite = channel.overwrites_for(everyone)
+    snapshot = {field: getattr(overwrite, field) for field in LOCKDOWN_PERMISSION_FIELDS}
+    await lockdown_states.update_one({"guild_id": channel.guild.id, "channel_id": channel.id},
+        {"$set": {"guild_id": channel.guild.id, "channel_id": channel.id, "original": snapshot, "locked_at": time.time(), "reason": reason}}, upsert=True)
+    for field in LOCKDOWN_PERMISSION_FIELDS:
+        setattr(overwrite, field, False)
+    await channel.set_permissions(everyone, overwrite=overwrite, reason=reason)
+
+async def _unlock_text_channel(channel, reason):
+    state = await lockdown_states.find_one({"guild_id": channel.guild.id, "channel_id": channel.id})
+    if not state:
+        return False
+    overwrite = channel.overwrites_for(channel.guild.default_role)
+    for field in LOCKDOWN_PERMISSION_FIELDS:
+        setattr(overwrite, field, state.get("original", {}).get(field))
+    await channel.set_permissions(channel.guild.default_role, overwrite=overwrite, reason=reason)
+    await lockdown_states.delete_one({"guild_id": channel.guild.id, "channel_id": channel.id})
+    return True
+
+async def _lockdown_all(guild, reason):
+    locked, failed = 0, 0
+    for channel in guild.text_channels:
+        try:
+            await _lock_text_channel(channel, reason)
+            locked += 1
+        except (discord.Forbidden, discord.HTTPException):
+            failed += 1
+    return locked, failed
+
+@bot.tree.command(name="lockdown", description="Lock a text channel or all text channels")
+@app_commands.checks.has_permissions(manage_channels=True)
+@app_commands.describe(channel="One channel to lock", all_channels="Lock every text channel")
+async def lockdown_cmd(interaction: discord.Interaction, channel: Optional[discord.TextChannel] = None, all_channels: bool = False):
+    if not interaction.guild:
+        await interaction.response.send_message("This only works in a server.", ephemeral=True)
+        return
+    await interaction.response.defer(ephemeral=True)
+    reason = f"Lockdown activated by {interaction.user} ({interaction.user.id})"
+    if all_channels:
+        locked, failed = await _lockdown_all(interaction.guild, reason)
+        await interaction.followup.send(f"🔒 Lockdown enabled. Locked **{locked}** channels; **{failed}** failed.", ephemeral=True)
+    elif channel:
+        try:
+            await _lock_text_channel(channel, reason)
+            await interaction.followup.send(f"🔒 {channel.mention} is locked.", ephemeral=True)
+        except discord.Forbidden:
+            await interaction.followup.send("I need Manage Channels permission to lock that channel.", ephemeral=True)
+    else:
+        await interaction.followup.send("Choose a channel or set all_channels to true.", ephemeral=True)
+
+@bot.tree.command(name="unlockdown", description="Restore one channel or all channels locked by Cedar Cove")
+@app_commands.checks.has_permissions(manage_channels=True)
+@app_commands.describe(channel="One channel to unlock; leave empty to restore all")
+async def unlockdown_cmd(interaction: discord.Interaction, channel: Optional[discord.TextChannel] = None):
+    if not interaction.guild:
+        await interaction.response.send_message("This only works in a server.", ephemeral=True)
+        return
+    await interaction.response.defer(ephemeral=True)
+    reason = f"Lockdown removed by {interaction.user} ({interaction.user.id})"
+    if channel:
+        try:
+            restored = await _unlock_text_channel(channel, reason)
+            await interaction.followup.send("🔓 Channel permissions restored." if restored else "That channel is not tracked as locked.", ephemeral=True)
+        except discord.Forbidden:
+            await interaction.followup.send("I need Manage Channels permission to unlock that channel.", ephemeral=True)
+        return
+    docs = await lockdown_states.find({"guild_id": interaction.guild.id}).to_list(length=500)
+    restored, failed = 0, 0
+    for doc in docs:
+        target = interaction.guild.get_channel(doc["channel_id"])
+        if target:
+            try:
+                restored += int(await _unlock_text_channel(target, reason))
+            except (discord.Forbidden, discord.HTTPException):
+                failed += 1
+    await interaction.followup.send(f"🔓 Restored **{restored}** channels; **{failed}** failed.", ephemeral=True)
+
+@bot.tree.command(name="antiraid", description="Enable or configure automatic raid detection")
+@app_commands.checks.has_permissions(administrator=True)
+@app_commands.describe(enabled="Turn anti-raid on or off", join_threshold="Joins in the window that trigger lockdown (2-25)", window_seconds="Detection window (10-120 seconds)")
+async def antiraid_cmd(interaction: discord.Interaction, enabled: bool,
+    join_threshold: app_commands.Range[int, 2, 25] = 6, window_seconds: app_commands.Range[int, 10, 120] = 20):
+    if not interaction.guild:
+        await interaction.response.send_message("This only works in a server.", ephemeral=True)
+        return
+    await security_settings.update_one({"guild_id": interaction.guild.id},
+        {"$set": {"guild_id": interaction.guild.id, "antiraid.enabled": enabled,
+                   "antiraid.threshold": int(join_threshold), "antiraid.window_seconds": int(window_seconds),
+                   "antiraid.recent_joins": []}}, upsert=True)
+    await interaction.response.send_message(
+        f"🛡️ Anti-raid **{'enabled' if enabled else 'disabled'}**. Trigger: **{join_threshold} joins / {window_seconds}s**.",
+        ephemeral=True)
+
+@bot.event
+async def on_member_join(member: discord.Member):
+    try:
+        config = await security_settings.find_one({"guild_id": member.guild.id}) or {}
+        anti = config.get("antiraid", {})
+        if not anti.get("enabled"):
+            return
+        now = time.time()
+        window = max(10, min(120, int(anti.get("window_seconds", 20))))
+        threshold = max(2, min(25, int(anti.get("threshold", 6))))
+        await security_settings.update_one({"guild_id": member.guild.id},
+            {"$push": {"antiraid.recent_joins": {"$each": [now], "$slice": -threshold}}}, upsert=True)
+        fresh = await security_settings.find_one({"guild_id": member.guild.id}) or {}
+        recent = [stamp for stamp in fresh.get("antiraid", {}).get("recent_joins", []) if now - stamp <= window]
+        await security_settings.update_one({"guild_id": member.guild.id}, {"$set": {"antiraid.recent_joins": recent}}, upsert=True)
+        if len(recent) >= threshold:
+            await security_settings.update_one({"guild_id": member.guild.id},
+                {"$set": {"antiraid.enabled": False, "antiraid.triggered_at": now}})
+            locked, failed = await _lockdown_all(member.guild, f"Anti-raid: {threshold} joins within {window}s")
+            logger.warning("ANTI-RAID triggered guild=%s joins=%s locked=%s failed=%s", member.guild.id, len(recent), locked, failed)
+            try:
+                if member.guild.owner:
+                    await member.guild.owner.send(
+                        f"🚨 Anti-raid triggered in **{member.guild.name}**: {threshold} joins in {window}s. "
+                        f"Locked {locked} channels ({failed} failed). Anti-raid paused. "
+                        "Review the server, run /unlockdown, then /antiraid to re-enable.")
+            except discord.HTTPException:
+                pass
+    except Exception:
+        logger.exception("Anti-raid join processing failed for guild %s", member.guild.id)
+
 # ---------------------------------------------------------------------------
 # Slash commands — Ticket subsystem
 # ---------------------------------------------------------------------------
