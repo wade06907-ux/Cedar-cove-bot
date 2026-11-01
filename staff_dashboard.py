@@ -71,10 +71,40 @@ def setup_staff(bot, get_store, logger):
 
 
 async def _audit_log_reader_loop(bot):
-    """Forward only audit entries created after the saved cursor; never replay startup history."""
+    """Stream fresh Discord audit entries quickly with SCNX-inspired embeds."""
     await bot.wait_until_ready()
     cursors = getattr(bot, "audit_log_cursor_store", None)
     logger = getattr(bot, "staff_dashboard_logger", None) or __import__("logging").getLogger("mega_bot.audit")
+    action_styles = {
+        "ban": ("🔨", discord.Color.red()),
+        "kick": ("👢", discord.Color.red()),
+        "unban": ("🔓", discord.Color.green()),
+        "member_update": ("👤", discord.Color.orange()),
+        "member_role_update": ("🎭", discord.Color.blurple()),
+        "role_create": ("🆕", discord.Color.green()),
+        "role_delete": ("🗑️", discord.Color.red()),
+        "role_update": ("📝", discord.Color.orange()),
+        "channel_create": ("📁", discord.Color.green()),
+        "channel_delete": ("🗑️", discord.Color.red()),
+        "channel_update": ("📝", discord.Color.orange()),
+        "message_delete": ("🗑️", discord.Color.red()),
+        "message_bulk_delete": ("🧹", discord.Color.red()),
+        "overwrite_create": ("🔐", discord.Color.green()),
+        "overwrite_update": ("🔐", discord.Color.orange()),
+        "overwrite_delete": ("🔐", discord.Color.red()),
+        "webhook_create": ("🔗", discord.Color.green()),
+        "webhook_delete": ("🔗", discord.Color.red()),
+        "webhook_update": ("🔗", discord.Color.orange()),
+        "invite_create": ("✉️", discord.Color.green()),
+        "invite_delete": ("✉️", discord.Color.red()),
+    }
+    change_labels = {
+        "name": "Name", "nick": "Nickname", "topic": "Topic", "bitrate": "Bitrate",
+        "slowmode_delay": "Slowmode", "rtc_region": "Region", "nsfw": "Age restricted",
+        "hoist": "Displayed separately", "mentionable": "Mentionable", "permissions": "Permissions",
+        "color": "Color", "position": "Position", "communication_disabled_until": "Timeout",
+        "deaf": "Server deafened", "mute": "Server muted",
+    }
     while not bot.is_closed():
         for guild in list(bot.guilds):
             try:
@@ -86,18 +116,10 @@ async def _audit_log_reader_loop(bot):
                 me = guild.me
                 perms = channel.permissions_for(me) if me else None
                 if not perms or not perms.view_audit_log or not perms.send_messages or not perms.embed_links:
-                    logger.warning(
-                        "Audit log reader missing permissions: guild=%s channel=%s view_audit_log=%s send_messages=%s embed_links=%s",
-                        guild.id, channel.id, bool(perms and perms.view_audit_log),
-                        bool(perms and perms.send_messages), bool(perms and perms.embed_links)
-                    )
                     continue
 
                 cursor_key = str(guild.id)
                 cursor = await cursors.get(cursor_key, None) if cursors else None
-
-                # First run / missing cursor: baseline at the newest existing entry.
-                # This deliberately skips historical backlog instead of flooding the channel.
                 if cursor is None:
                     newest = None
                     async for entry in guild.audit_logs(limit=1):
@@ -105,7 +127,7 @@ async def _audit_log_reader_loop(bot):
                         break
                     if newest is not None and cursors:
                         await cursors.set(cursor_key, str(newest.id))
-                        logger.info("Audit log cursor initialized without replay: guild=%s cursor=%s", guild.id, newest.id)
+                        logger.info("Audit cursor initialized (no history replay): guild=%s cursor=%s", guild.id, newest.id)
                     continue
 
                 entries = []
@@ -113,46 +135,57 @@ async def _audit_log_reader_loop(bot):
                     if entry.id <= int(cursor):
                         break
                     entries.append(entry)
-                if not entries:
-                    continue
-
-                # Discord returns newest-first; send oldest-newest to preserve order.
                 entries.reverse()
+
                 for entry in entries:
-                    actor = str(entry.user) if entry.user else "Unknown moderator"
-                    target = str(entry.target) if entry.target is not None else "Unknown target"
+                    action_key = str(entry.action).lower().replace(" ", "_")
+                    emoji, color = action_styles.get(action_key, ("📋", discord.Color.blurple()))
                     action = str(entry.action).replace("_", " ").title()
-                    reason = entry.reason or "No reason provided"
+                    actor = entry.user
+                    target = entry.target
                     embed = discord.Embed(
-                        title=f"📋  {action}",
-                        color=discord.Color.blurple(),
+                        title=f"{emoji} {action}",
+                        color=color,
                         timestamp=entry.created_at,
                     )
-                    embed.add_field(name="Moderator", value=f"{actor} ({entry.user_id or 'unknown'})"[:1024], inline=True)
-                    embed.add_field(name="Target", value=f"{target} ({getattr(entry.target, 'id', 'unknown')})"[:1024], inline=True)
-                    embed.add_field(name="Reason", value=str(reason)[:1024], inline=False)
+                    embed.set_author(
+                        name=str(actor) if actor else "Unknown moderator",
+                        icon_url=actor.display_avatar.url if actor else (guild.icon.url if guild.icon else discord.Embed.Empty),
+                    )
+                    if target is not None:
+                        embed.add_field(name="Target", value=f"{target}\\n`{getattr(target, 'id', 'unknown')}`"[:1024], inline=True)
+                    if entry.user_id:
+                        embed.add_field(name="Moderator ID", value=f"`{entry.user_id}`", inline=True)
+                    if entry.reason:
+                        embed.add_field(name="Reason", value=str(entry.reason)[:1024], inline=False)
+
+                    details = []
+                    for change in getattr(entry, "changes", []) or []:
+                        key = str(getattr(change, "key", ""))
+                        before = getattr(change, "before", None)
+                        after = getattr(change, "after", None)
+                        label = change_labels.get(key, key.replace("_", " ").title() or "Updated")
+                        if before is not None or after is not None:
+                            details.append(f"**{label}:** {str(before)[:350] if before is not None else '—'} → {str(after)[:350] if after is not None else '—'}")
+                    if details:
+                        embed.add_field(name="Changes", value="\\n".join(details)[:1024], inline=False)
                     if guild.icon:
-                        embed.set_author(name=guild.name, icon_url=guild.icon.url)
-                    else:
-                        embed.set_author(name=guild.name)
-                    embed.set_footer(text="Cedar Cove • Server Logs")
+                        embed.set_thumbnail(url=guild.icon.url)
+                    embed.set_footer(text=f"{guild.name} • Cedar Cove Logs", icon_url=discord.Embed.Empty)
                     try:
                         await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
                     except (discord.Forbidden, discord.HTTPException) as exc:
-                        logger.warning(
-                            "Audit log entry delivery failed: guild=%s channel=%s entry=%s error=%s",
-                            guild.id, channel.id, entry.id, exc
-                        )
+                        logger.warning("Audit delivery failed: guild=%s channel=%s entry=%s error=%s", guild.id, channel.id, entry.id, exc)
                         break
                     if cursors:
                         await cursors.set(cursor_key, str(entry.id))
             except discord.Forbidden:
-                logger.warning("Cannot read Discord audit log: guild=%s; grant View Audit Log permission", guild.id)
+                logger.warning("Cannot read Discord audit log: guild=%s; grant View Audit Log", guild.id)
             except (discord.HTTPException, ValueError, TypeError) as exc:
-                logger.warning("Audit log reader failed for guild=%s: %s", guild.id, exc)
+                logger.warning("Audit reader failed for guild=%s: %s", guild.id, exc)
             except Exception:
-                logger.exception("Unexpected audit log reader error for guild=%s", guild.id)
-        await asyncio.sleep(20)
+                logger.exception("Unexpected audit reader error for guild=%s", guild.id)
+        await asyncio.sleep(5)
 
 
 async def _dashboard_module(bot, guild_id, name):
