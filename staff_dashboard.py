@@ -150,16 +150,14 @@ async def _dashboard_module(bot, guild_id, name):
     return module
 
 async def _log_event(guild, event_key, title, description):
+    """Send every dashboard event to the single channel configured by /setup-log-channel."""
     bot = guild._state._get_client()
     settings = await _dashboard_module(bot, guild.id, 'logging')
     logger = getattr(bot, 'staff_dashboard_logger', None) or __import__('logging').getLogger('mega_bot.audit')
-    if not settings.get(event_key + 'Enabled'):
-        logger.info('Audit event skipped: guild=%s event=%s disabled in config', guild.id, event_key)
-        return
-    channel_id = str(settings.get(event_key + 'ChannelId') or settings.get('channelId') or '')
+    channel_id = str(settings.get('channelId') or settings.get('logChannelId') or '')
     channel = guild.get_channel(int(channel_id)) if channel_id.isdigit() else None
     if not isinstance(channel, discord.TextChannel):
-        logger.warning('Audit event has no valid destination: guild=%s event=%s configured_channel=%r', guild.id, event_key, channel_id)
+        logger.info('Audit event skipped: guild=%s event=%s; no log channel configured (use /setup-log-channel)', guild.id, event_key)
         return
     me = guild.me
     perms = channel.permissions_for(me) if me else None
