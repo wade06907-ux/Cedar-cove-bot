@@ -472,6 +472,20 @@ async def save_config(request):
             for key, value in settings.items():
                 if isinstance(value, (str, int, float, bool)) or value is None:
                     entry[str(key)[:60]] = value if not isinstance(value, str) else value[:4000]
+                elif name == "logging" and key == "events" and isinstance(value, dict):
+                    events = entry.setdefault("events", {})
+                    if not isinstance(events, dict):
+                        events = {}
+                    for event_key, event_settings in value.items():
+                        if not re.fullmatch(r"[a-zA-Z0-9_-]{1,40}", str(event_key)) or not isinstance(event_settings, dict):
+                            continue
+                        saved_event = dict(events.get(str(event_key), {}))
+                        if "enabled" in event_settings:
+                            saved_event["enabled"] = bool(event_settings["enabled"])
+                        if event_settings.get("channelId") is not None:
+                            saved_event["channelId"] = str(event_settings.get("channelId") or "")[:30]
+                        events[str(event_key)] = saved_event
+                    entry["events"] = events
             clean["modules"][str(name)] = entry
 
         # The logging panel should never silently turn its audit events off.
