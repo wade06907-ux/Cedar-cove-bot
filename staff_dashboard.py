@@ -79,14 +79,9 @@ async def _audit_log_reader_loop(bot):
         for guild in list(bot.guilds):
             try:
                 settings = await _dashboard_module(bot, guild.id, "logging")
-                events = settings.get("events") or {}
-                audit_cfg = events.get("auditLog") if isinstance(events, dict) else {}
-                if not isinstance(audit_cfg, dict):
-                    audit_cfg = {}
-                enabled = bool(audit_cfg.get("enabled", settings.get("auditLogEnabled", settings.get("auditLog", False))))
-                channel_id = str(audit_cfg.get("channelId") or settings.get("auditLogChannelId") or settings.get("auditLogChannel") or "")
+                channel_id = str(settings.get("channelId") or settings.get("logChannelId") or "")
                 channel = guild.get_channel(int(channel_id)) if channel_id.isdigit() else None
-                if not enabled or not isinstance(channel, discord.TextChannel):
+                if not isinstance(channel, discord.TextChannel):
                     continue
                 me = guild.me
                 perms = channel.permissions_for(me) if me else None
