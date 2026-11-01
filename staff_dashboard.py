@@ -199,7 +199,7 @@ async def _audit_log_reader_loop(bot):
                 logger.warning("Audit reader failed for guild=%s: %s", guild.id, exc)
             except Exception:
                 logger.exception("Unexpected audit reader error for guild=%s", guild.id)
-        await asyncio.sleep(5)
+        await asyncio.sleep(2)
 
 
 async def _dashboard_module(bot, guild_id, name):
@@ -326,23 +326,49 @@ async def _dashboard_honeypot_message(message):
         if log: log.warning('Honeypot punishment failed: %s', exc)
 
 async def _dashboard_log_raw_message_delete(payload):
-    state = getattr(payload, '_state', None)
-    bot = state._get_client() if state else None
-    guild = bot.get_guild(payload.guild_id) if bot and payload.guild_id else None
-    if guild is None:
-        return
     cached = getattr(payload, 'cached_message', None)
-    if cached is not None and cached.author.bot:
+    state = getattr(cached, '_state', None) or getattr(payload, '_state', None)
+    bot = state._get_client() if state and hasattr(state, '_get_client') else None
+    guild_id = getattr(payload, 'guild_id', None)
+    guild = bot.get_guild(guild_id) if bot and guild_id else None
+    logger = getattr(bot, 'staff_dashboard_logger', None) if bot else None
+    logger = logger or __import__('logging').getLogger('mega_bot.audit')
+
+    if guild is None:
+        logger.warning(
+            'Message delete received but guild/client could not be resolved: guild=%s channel=%s message=%s',
+            guild_id, getattr(payload, 'channel_id', None), getattr(payload, 'message_id', None)
+        )
         return
-    channel = guild.get_channel(payload.channel_id)
-    channel_name = channel.mention if channel else 'channel ' + str(payload.channel_id)
+
+    if cached is not None and getattr(getattr(cached, 'author', None), 'bot', False):
+        return
+
+    channel = guild.get_channel(getattr(payload, 'channel_id', 0))
+    channel_name = channel.mention if channel else f"channel {getattr(payload, 'channel_id', 'unknown')}"
+    message_id = getattr(payload, 'message_id', 'unknown')
     if cached is not None:
-        description = 'Author: {} ({})\\nChannel: {}\\nMessage ID: {}\\nContent: {}'.format(cached.author, cached.author.id, channel_name, payload.message_id, (cached.content or '[no text]')[:2500])
+        author = getattr(cached, 'author', None)
+        author_text = f"{author} ({getattr(author, 'id', 'unknown')})" if author else "Unknown author"
+        content = getattr(cached, 'content', '') or '[no text]'
+        description = (
+            f"Author: {author_text}\\nChannel: {channel_name}\\n"
+            f"Message ID: {message_id}\\nContent: {content[:2500]}"
+        )
     else:
-        description = 'Message deleted\\nChannel: {}\\nMessage ID: {}\\nContent was not cached; Discord.py cannot recover it.'.format(channel_name, payload.message_id)
-    log = getattr(bot, 'staff_dashboard_logger', None) or __import__('logging').getLogger('mega_bot.audit')
-    log.info('MESSAGE DELETE EVENT RECEIVED | guild=%s | channel=%s | message=%s | cached=%s', guild.id, payload.channel_id, payload.message_id, cached is not None)
-    await _log_event(guild, 'messageDelete', 'Message deleted', description)
+        description = (
+            f"Message deleted\\nChannel: {channel_name}\\nMessage ID: {message_id}\\n"
+            "Content was not cached; Discord does not provide the deleted message body."
+        )
+
+    logger.info(
+        'MESSAGE DELETE EVENT RECEIVED | guild=%s | channel=%s | message=%s | cached=%s',
+        guild.id, getattr(payload, 'channel_id', None), message_id, cached is not None
+    )
+    try:
+        await _log_event(guild, 'messageDelete', 'Message deleted', description)
+    except Exception:
+        logger.exception('Message-delete audit delivery crashed: guild=%s message=%s', guild.id, message_id)
 
 async def _dashboard_log_message_edit(before, after):
     if after.guild and not after.author.bot and before.content != after.content: await _log_event(after.guild, 'messageEdit', 'Message edited', 'Author: {} ({})\nChannel: {}\nBefore: {}\nAfter: {}'.format(after.author, after.author.id, after.channel.mention, (before.content or '[empty]')[:1200], (after.content or '[empty]')[:1200]))
