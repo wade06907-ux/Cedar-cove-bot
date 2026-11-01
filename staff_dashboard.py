@@ -138,7 +138,7 @@ async def _audit_log_reader_loop(bot):
                 entries.reverse()
 
                 for entry in entries:
-                    action_key = str(entry.action).lower().replace(" ", "_")
+                    action_key = getattr(entry.action, "name", str(entry.action)).lower().replace(" ", "_")
                     emoji, color = action_styles.get(action_key, ("📋", discord.Color.blurple()))
                     action = str(entry.action).replace("_", " ").title()
                     actor = entry.user
