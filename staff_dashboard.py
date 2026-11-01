@@ -488,17 +488,18 @@ async def save_config(request):
                     entry["events"] = events
             clean["modules"][str(name)] = entry
 
-        # The logging panel should never silently turn its audit events off.
-        # Keep every event enabled in storage, even when an older dashboard
-        # payload omits a toggle or sends a stale false value.
+        # Respect per-event switches from the dashboard instead of forcing them on.
+        # Normalize nested event settings to legacy flat keys used by listeners.
         logging_settings = clean["modules"].setdefault("logging", {})
-        for event_key in (
-            "messageDelete", "messageEdit", "channelCreate", "channelDelete",
-            "channelUpdate", "roleCreate", "roleDelete", "roleUpdate",
-            "memberJoin", "memberLeave", "memberBan", "memberUnban",
-            "nicknameUpdate", "memberRoleUpdate",
-        ):
-            logging_settings[event_key + "Enabled"] = True
+        events = logging_settings.get("events")
+        if isinstance(events, dict):
+            for event_key, event_settings in events.items():
+                if not isinstance(event_settings, dict):
+                    continue
+                if "enabled" in event_settings:
+                    logging_settings[event_key + "Enabled"] = bool(event_settings["enabled"])
+                if "channelId" in event_settings:
+                    logging_settings[event_key + "ChannelId"] = str(event_settings.get("channelId") or "")
 
         await request.app["staff_store"].set(gid, clean)
         await _audit(request, gid, user, "save_config", "Dashboard configuration saved")
