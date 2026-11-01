@@ -70,9 +70,22 @@ def setup_staff(bot, get_store, logger):
 
 async def _dashboard_module(bot, guild_id, name):
     store = getattr(bot, 'staff_dashboard_store', None)
-    if store is None: return {}
+    if store is None:
+        return {}
     config = await store.get(str(guild_id), {})
-    return ((config.get('modules') or {}).get(name) or {})
+    module = ((config.get('modules') or {}).get(name) or {})
+    if name == 'logging':
+        module = dict(module)
+        events = module.get('events') or {}
+        if isinstance(events, dict):
+            for event_key, event_settings in events.items():
+                if not isinstance(event_settings, dict):
+                    continue
+                if 'enabled' in event_settings:
+                    module[event_key + 'Enabled'] = bool(event_settings.get('enabled'))
+                if event_settings.get('channelId') is not None:
+                    module[event_key + 'ChannelId'] = str(event_settings.get('channelId') or '')
+    return module
 
 async def _log_event(guild, event_key, title, description):
     bot = guild._state._get_client()
