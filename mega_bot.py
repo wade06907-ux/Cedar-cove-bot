@@ -3317,6 +3317,40 @@ async def setup_cmd(interaction: discord.Interaction):
     )
 
 
+@bot.tree.command(name="setup-log-channel", description="Set the server's single event log channel")
+@app_commands.checks.has_permissions(administrator=True)
+@app_commands.describe(channel="Text channel where the bot should send server logs")
+async def setup_log_channel(interaction: discord.Interaction, channel: discord.TextChannel):
+    if interaction.guild is None:
+        await interaction.response.send_message("This command only works in a server.", ephemeral=True)
+        return
+    store = getattr(bot, "staff_dashboard_store", None)
+    if store is None:
+        await interaction.response.send_message("The dashboard storage is not ready. Try again shortly.", ephemeral=True)
+        return
+    config = await store.get(str(interaction.guild.id), {})
+    logging_config = config.setdefault("modules", {}).setdefault("logging", {})
+    logging_config["channelId"] = str(channel.id)
+    await store.set(str(interaction.guild.id), config)
+    await interaction.response.send_message(
+        f"✅ Server logs will now be sent to {channel.mention}. No dashboard toggle is needed.",
+        ephemeral=True,
+    )
+
+
+@setup_log_channel.error
+async def setup_log_channel_error(interaction: discord.Interaction, error):
+    if isinstance(error, app_commands.errors.MissingPermissions):
+        message = "You need Administrator permission to set the log channel."
+    else:
+        logger.exception("Error in /setup-log-channel", exc_info=error)
+        message = "Could not save the log channel. Please try again."
+    if interaction.response.is_done():
+        await interaction.followup.send(message, ephemeral=True)
+    else:
+        await interaction.response.send_message(message, ephemeral=True)
+
+
 @bot.tree.command(name="claim", description="Claim this ticket")
 async def claim_cmd(interaction: discord.Interaction):
     await handle_claim(interaction)
