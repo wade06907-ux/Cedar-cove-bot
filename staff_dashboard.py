@@ -131,7 +131,7 @@ async def _audit_log_reader_loop(bot):
                     continue
 
                 entries = []
-                async for entry in guild.audit_logs(limit=25):
+                async for entry in guild.audit_logs(limit=100):
                     if entry.id <= int(cursor):
                         break
                     entries.append(entry)
@@ -377,13 +377,13 @@ async def _dashboard_log_channel_create(channel):
 async def _dashboard_log_channel_delete(channel):
     if channel.guild: await _log_event(channel.guild, 'channelDelete', 'Channel deleted', '{} ({})'.format(channel.name, channel.id))
 async def _dashboard_log_channel_update(before, after):
-    if after.guild and (before.name != after.name or before.category_id != after.category_id): await _log_event(after.guild, 'channelUpdate', 'Channel updated', '{} -> {} ({})'.format(before.name, after.name, after.id))
+    if after.guild and (before.name != after.name or before.category_id != after.category_id or getattr(before, 'topic', None) != getattr(after, 'topic', None) or getattr(before, 'slowmode_delay', None) != getattr(after, 'slowmode_delay', None) or getattr(before, 'nsfw', None) != getattr(after, 'nsfw', None)): await _log_event(after.guild, 'channelUpdate', 'Channel updated', 'Name: {} -> {}\\nCategory: {} -> {}\\nTopic: {} -> {}\\nSlowmode: {} -> {}\\nAge restricted: {} -> {}\\nChannel ID: {}'.format(before.name, after.name, getattr(before.category, 'name', 'None'), getattr(after.category, 'name', 'None'), getattr(before.topic, None) or '[none]', getattr(after.topic, None) or '[none]', getattr(before.slowmode_delay, 0), getattr(after.slowmode_delay, 0), getattr(before.nsfw, False), getattr(after.nsfw, False), after.id))
 async def _dashboard_log_role_create(role):
     await _log_event(role.guild, 'roleCreate', 'Role created', '{} ({})'.format(role.name, role.id))
 async def _dashboard_log_role_delete(role):
     await _log_event(role.guild, 'roleDelete', 'Role deleted', '{} ({})'.format(role.name, role.id))
 async def _dashboard_log_role_update(before, after):
-    if before.name != after.name or before.permissions != after.permissions: await _log_event(after.guild, 'roleUpdate', 'Role updated', '{} -> {} ({})'.format(before.name, after.name, after.id))
+    if before.name != after.name or before.permissions != after.permissions or before.color != after.color or before.hoist != after.hoist or before.mentionable != after.mentionable or before.position != after.position: await _log_event(after.guild, 'roleUpdate', 'Role updated', 'Name: {} -> {}\\nPermissions changed: {}\\nColor: {} -> {}\\nDisplayed separately: {} -> {}\\nMentionable: {} -> {}\\nPosition: {} -> {}\\nRole ID: {}'.format(before.name, after.name, before.permissions != after.permissions, before.color, after.color, before.hoist, after.hoist, before.mentionable, after.mentionable, before.position, after.position, after.id))
 async def _dashboard_log_member_join(member):
     if not member.bot: await _log_event(member.guild, 'memberJoin', 'Member joined', '{} ({})'.format(member, member.id))
 async def _dashboard_log_member_leave(member):
