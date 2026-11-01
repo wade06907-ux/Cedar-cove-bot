@@ -145,7 +145,7 @@ async def _dashboard_module(bot, guild_id, name):
     return module
 
 async def _log_event(guild, event_key, title, description):
-    """Send every dashboard event to the single channel configured by /setup-log-channel."""
+    """Send a single polished SCNX-style event embed to the configured log channel."""
     bot = guild._state._get_client()
     settings = await _dashboard_module(bot, guild.id, 'logging')
     logger = getattr(bot, 'staff_dashboard_logger', None) or __import__('logging').getLogger('mega_bot.audit')
@@ -159,7 +159,36 @@ async def _log_event(guild, event_key, title, description):
     if not perms or not perms.send_messages or not perms.embed_links:
         logger.warning('Audit destination permission issue: guild=%s event=%s channel=%s send_messages=%s embed_links=%s', guild.id, event_key, channel.id, bool(perms and perms.send_messages), bool(perms and perms.embed_links))
         return
-    embed = discord.Embed(title=title, description=str(description)[:4000], color=discord.Color.blurple(), timestamp=discord.utils.utcnow())
+
+    event_styles = {
+        'messageDelete': ('🗑️', discord.Color.red()),
+        'messageEdit': ('✏️', discord.Color.orange()),
+        'channelCreate': ('📁', discord.Color.green()),
+        'channelDelete': ('🗑️', discord.Color.red()),
+        'channelUpdate': ('📝', discord.Color.orange()),
+        'roleCreate': ('🆕', discord.Color.green()),
+        'roleDelete': ('🗑️', discord.Color.red()),
+        'roleUpdate': ('📝', discord.Color.orange()),
+        'memberJoin': ('📥', discord.Color.green()),
+        'memberLeave': ('📤', discord.Color.orange()),
+        'memberBan': ('🔨', discord.Color.red()),
+        'memberUnban': ('🔓', discord.Color.green()),
+        'memberUpdate': ('👤', discord.Color.blurple()),
+        'nicknameUpdate': ('🏷️', discord.Color.orange()),
+        'memberRoleUpdate': ('🎭', discord.Color.blurple()),
+    }
+    emoji, color = event_styles.get(event_key, ('📋', discord.Color.blurple()))
+    embed = discord.Embed(
+        title=f'{emoji}  {title}',
+        description=str(description)[:4000],
+        color=color,
+        timestamp=discord.utils.utcnow(),
+    )
+    if guild.icon:
+        embed.set_author(name=guild.name, icon_url=guild.icon.url)
+    else:
+        embed.set_author(name=guild.name)
+    embed.set_footer(text='Cedar Cove • Server Logs')
     try:
         await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
         logger.info('Audit event delivered: guild=%s event=%s channel=%s', guild.id, event_key, channel.id)
