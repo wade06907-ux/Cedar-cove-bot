@@ -71,7 +71,7 @@ def setup_staff(bot, get_store, logger):
 
 
 async def _audit_log_reader_loop(bot):
-    """Poll Discord's server audit log and forward new entries to the dashboard-selected channel."""
+    """Forward only audit entries created after the saved cursor; never replay startup history."""
     await bot.wait_until_ready()
     cursors = getattr(bot, "audit_log_cursor_store", None)
     logger = getattr(bot, "staff_dashboard_logger", None) or __import__("logging").getLogger("mega_bot.audit")
@@ -86,33 +86,63 @@ async def _audit_log_reader_loop(bot):
                 me = guild.me
                 perms = channel.permissions_for(me) if me else None
                 if not perms or not perms.view_audit_log or not perms.send_messages or not perms.embed_links:
-                    logger.warning("Audit log reader missing permissions: guild=%s channel=%s view_audit_log=%s send_messages=%s embed_links=%s",
-                        guild.id, channel.id, bool(perms and perms.view_audit_log), bool(perms and perms.send_messages), bool(perms and perms.embed_links))
+                    logger.warning(
+                        "Audit log reader missing permissions: guild=%s channel=%s view_audit_log=%s send_messages=%s embed_links=%s",
+                        guild.id, channel.id, bool(perms and perms.view_audit_log),
+                        bool(perms and perms.send_messages), bool(perms and perms.embed_links)
+                    )
                     continue
+
                 cursor_key = str(guild.id)
                 cursor = await cursors.get(cursor_key, None) if cursors else None
+
+                # First run / missing cursor: baseline at the newest existing entry.
+                # This deliberately skips historical backlog instead of flooding the channel.
+                if cursor is None:
+                    newest = None
+                    async for entry in guild.audit_logs(limit=1):
+                        newest = entry
+                        break
+                    if newest is not None and cursors:
+                        await cursors.set(cursor_key, str(newest.id))
+                        logger.info("Audit log cursor initialized without replay: guild=%s cursor=%s", guild.id, newest.id)
+                    continue
+
                 entries = []
                 async for entry in guild.audit_logs(limit=25):
-                    if cursor is not None and entry.id <= int(cursor):
+                    if entry.id <= int(cursor):
                         break
                     entries.append(entry)
                 if not entries:
                     continue
+
+                # Discord returns newest-first; send oldest-newest to preserve order.
                 entries.reverse()
                 for entry in entries:
                     actor = str(entry.user) if entry.user else "Unknown moderator"
                     target = str(entry.target) if entry.target is not None else "Unknown target"
                     action = str(entry.action).replace("_", " ").title()
                     reason = entry.reason or "No reason provided"
-                    embed = discord.Embed(title="Server Audit Log", color=discord.Color.blurple(), timestamp=entry.created_at)
-                    embed.add_field(name="Action", value=action[:1024], inline=True)
+                    embed = discord.Embed(
+                        title=f"📋  {action}",
+                        color=discord.Color.blurple(),
+                        timestamp=entry.created_at,
+                    )
                     embed.add_field(name="Moderator", value=f"{actor} ({entry.user_id or 'unknown'})"[:1024], inline=True)
-                    embed.add_field(name="Target", value=f"{target} ({getattr(entry.target, 'id', 'unknown')})"[:1024], inline=False)
+                    embed.add_field(name="Target", value=f"{target} ({getattr(entry.target, 'id', 'unknown')})"[:1024], inline=True)
                     embed.add_field(name="Reason", value=str(reason)[:1024], inline=False)
+                    if guild.icon:
+                        embed.set_author(name=guild.name, icon_url=guild.icon.url)
+                    else:
+                        embed.set_author(name=guild.name)
+                    embed.set_footer(text="Cedar Cove • Server Logs")
                     try:
                         await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
                     except (discord.Forbidden, discord.HTTPException) as exc:
-                        logger.warning("Audit log entry delivery failed: guild=%s channel=%s entry=%s error=%s", guild.id, channel.id, entry.id, exc)
+                        logger.warning(
+                            "Audit log entry delivery failed: guild=%s channel=%s entry=%s error=%s",
+                            guild.id, channel.id, entry.id, exc
+                        )
                         break
                     if cursors:
                         await cursors.set(cursor_key, str(entry.id))
