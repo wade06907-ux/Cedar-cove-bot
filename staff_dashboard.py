@@ -30,6 +30,7 @@ def setup_staff(bot, get_store, logger):
     bot.staff_dashboard_store = get_store("staff_dashboard_configs")
     bot.staff_dashboard_audit_store = get_store("staff_dashboard_audit")
     bot.role_nicknames_store = get_store("role_nicknames")
+    bot.audit_log_cursor_store = get_store("audit_log_cursors")
     if not getattr(bot, "_role_nickname_listener_added", False):
         bot.add_listener(_role_nickname_member_update, "on_member_update")
         bot._role_nickname_listener_added = True
@@ -52,6 +53,13 @@ def setup_staff(bot, get_store, logger):
         if not getattr(bot, marker, False):
             bot.add_listener(listener, event_name)
             setattr(bot, marker, True)
+    if not getattr(bot, '_audit_log_reader_listener_added', False):
+        async def _start_audit_log_reader():
+            if not getattr(bot, '_audit_log_reader_task_started', False):
+                bot._audit_log_reader_task = asyncio.create_task(_audit_log_reader_loop(bot))
+                bot._audit_log_reader_task_started = True
+        bot.add_listener(_start_audit_log_reader, 'on_ready')
+        bot._audit_log_reader_listener_added = True
     if not getattr(bot, '_verification_refresh_listener_added', False):
         async def _start_verification_refresh():
             if not getattr(bot, '_verification_refresh_task_started', False):
@@ -60,6 +68,66 @@ def setup_staff(bot, get_store, logger):
         bot.add_listener(_start_verification_refresh, 'on_ready')
         bot._verification_refresh_listener_added = True
 
+
+
+async def _audit_log_reader_loop(bot):
+    """Poll Discord's server audit log and forward new entries to the dashboard-selected channel."""
+    await bot.wait_until_ready()
+    cursors = getattr(bot, "audit_log_cursor_store", None)
+    logger = getattr(bot, "staff_dashboard_logger", None) or __import__("logging").getLogger("mega_bot.audit")
+    while not bot.is_closed():
+        for guild in list(bot.guilds):
+            try:
+                settings = await _dashboard_module(bot, guild.id, "logging")
+                events = settings.get("events") or {}
+                audit_cfg = events.get("auditLog") if isinstance(events, dict) else {}
+                if not isinstance(audit_cfg, dict):
+                    audit_cfg = {}
+                enabled = bool(audit_cfg.get("enabled", settings.get("auditLogEnabled", settings.get("auditLog", False))))
+                channel_id = str(audit_cfg.get("channelId") or settings.get("auditLogChannelId") or settings.get("auditLogChannel") or "")
+                channel = guild.get_channel(int(channel_id)) if channel_id.isdigit() else None
+                if not enabled or not isinstance(channel, discord.TextChannel):
+                    continue
+                me = guild.me
+                perms = channel.permissions_for(me) if me else None
+                if not perms or not perms.view_audit_log or not perms.send_messages or not perms.embed_links:
+                    logger.warning("Audit log reader missing permissions: guild=%s channel=%s view_audit_log=%s send_messages=%s embed_links=%s",
+                        guild.id, channel.id, bool(perms and perms.view_audit_log), bool(perms and perms.send_messages), bool(perms and perms.embed_links))
+                    continue
+                cursor_key = str(guild.id)
+                cursor = await cursors.get(cursor_key, None) if cursors else None
+                entries = []
+                async for entry in guild.audit_logs(limit=25):
+                    if cursor is not None and entry.id <= int(cursor):
+                        break
+                    entries.append(entry)
+                if not entries:
+                    continue
+                entries.reverse()
+                for entry in entries:
+                    actor = str(entry.user) if entry.user else "Unknown moderator"
+                    target = str(entry.target) if entry.target is not None else "Unknown target"
+                    action = str(entry.action).replace("_", " ").title()
+                    reason = entry.reason or "No reason provided"
+                    embed = discord.Embed(title="Server Audit Log", color=discord.Color.blurple(), timestamp=entry.created_at)
+                    embed.add_field(name="Action", value=action[:1024], inline=True)
+                    embed.add_field(name="Moderator", value=f"{actor} ({entry.user_id or 'unknown'})"[:1024], inline=True)
+                    embed.add_field(name="Target", value=f"{target} ({getattr(entry.target, 'id', 'unknown')})"[:1024], inline=False)
+                    embed.add_field(name="Reason", value=str(reason)[:1024], inline=False)
+                    try:
+                        await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+                    except (discord.Forbidden, discord.HTTPException) as exc:
+                        logger.warning("Audit log entry delivery failed: guild=%s channel=%s entry=%s error=%s", guild.id, channel.id, entry.id, exc)
+                        break
+                    if cursors:
+                        await cursors.set(cursor_key, str(entry.id))
+            except discord.Forbidden:
+                logger.warning("Cannot read Discord audit log: guild=%s; grant View Audit Log permission", guild.id)
+            except (discord.HTTPException, ValueError, TypeError) as exc:
+                logger.warning("Audit log reader failed for guild=%s: %s", guild.id, exc)
+            except Exception:
+                logger.exception("Unexpected audit log reader error for guild=%s", guild.id)
+        await asyncio.sleep(20)
 
 
 async def _dashboard_module(bot, guild_id, name):
