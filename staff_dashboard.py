@@ -150,7 +150,7 @@ async def _audit_log_reader_loop(bot):
                     )
                     embed.set_author(
                         name=str(actor) if actor else "Unknown moderator",
-                        icon_url=actor.display_avatar.url if actor else (guild.icon.url if guild.icon else discord.Embed.Empty),
+                        icon_url=actor.display_avatar.url if actor else (guild.icon.url if guild.icon else None),
                     )
                     if target is not None:
                         embed.add_field(name="Target", value=f"{target}\\n`{getattr(target, 'id', 'unknown')}`"[:1024], inline=True)
@@ -185,7 +185,7 @@ async def _audit_log_reader_loop(bot):
                         embed.add_field(name="Changes", value="\\n".join(details)[:1024], inline=False)
                     if guild.icon:
                         embed.set_thumbnail(url=guild.icon.url)
-                    embed.set_footer(text=f"{guild.name} • Cedar Cove Logs", icon_url=discord.Embed.Empty)
+                    embed.set_footer(text=f"{guild.name} • Cedar Cove Logs", icon_url=None)
                     try:
                         await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
                     except (discord.Forbidden, discord.HTTPException) as exc:
