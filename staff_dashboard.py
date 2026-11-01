@@ -952,7 +952,7 @@ async def dashboard_access(request):
         return error
     if not bool(user.get("whitelisted", False)):
         return _json(request, {"staffManagement": False, "dashboardAccess": False})
-    guild = _staff_guild(request)
+    guild = await _staff_guild(request)
     can_manage = bool(guild and _can_manage_staff(user, guild))
     return _json(request, {"staffManagement": can_manage, "dashboardAccess": True})
 
