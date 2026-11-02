@@ -1623,7 +1623,9 @@ async def open_ticket_for(interaction: discord.Interaction, panel: dict, option:
 
         number = await next_ticket_number(guild.id)
         option_label = option.get("label", "General")
-        channel_name = f"{_slugify(option_label)}-{number:04d}"
+        name_format = option.get("channel_name_format") or panel.get("channel_name_format") or "{username}-{number}"
+        safe_name = name_format.replace("{username}", _slugify(user.name)).replace("{displayname}", _slugify(user.display_name)).replace("{type}", _slugify(option_label)).replace("{number}", f"{number:04d}")
+        channel_name = re.sub(r"-{2,}", "-", re.sub(r"[^a-zA-Z0-9_-]", "-", safe_name)).strip("-_")[:90] or f"ticket-{number:04d}"
 
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(view_channel=False),
@@ -2123,10 +2125,12 @@ class SetupChoiceView(discord.ui.View):
 
 class SinglePanelModal(discord.ui.Modal, title="Create Single Panel"):
     panel_title = discord.ui.TextInput(label="Panel Title", placeholder="Support Tickets", max_length=256)
+    panel_message = discord.ui.TextInput(label="Message above the panel (optional)", style=discord.TextStyle.paragraph, required=False, max_length=1000)
     description = discord.ui.TextInput(
-        label="Description", style=discord.TextStyle.paragraph,
+        label="Panel Embed Description", style=discord.TextStyle.paragraph,
         placeholder="Click below to open a ticket", max_length=1000,
     )
+    channel_name_format = discord.ui.TextInput(label="Ticket Channel Name Format", default="{username}-{number}", placeholder="{username}-{number} or ticket-{number}", max_length=90)
     button_label = discord.ui.TextInput(label="Button Label", default="Open Ticket", max_length=80)
     button_emoji = discord.ui.TextInput(label="Button Emoji (optional)", required=False, max_length=10)
     ticket_message = discord.ui.TextInput(
@@ -2141,7 +2145,9 @@ class SinglePanelModal(discord.ui.Modal, title="Create Single Panel"):
         builder = {
             "type": "single",
             "title": str(self.panel_title),
+            "panel_message": str(self.panel_message) if self.panel_message.value else None,
             "description": str(self.description),
+            "channel_name_format": str(self.channel_name_format),
             "ticket_message": str(self.ticket_message) if self.ticket_message.value else None,
             "options": [{
                 "label": str(self.button_label),
@@ -2157,10 +2163,12 @@ class SinglePanelModal(discord.ui.Modal, title="Create Single Panel"):
 
 class MultiPanelModal(discord.ui.Modal, title="Create Multi-Panel"):
     panel_title = discord.ui.TextInput(label="Panel Title", placeholder="Need Help?", max_length=256)
+    panel_message = discord.ui.TextInput(label="Message above the panel (optional)", style=discord.TextStyle.paragraph, required=False, max_length=1000)
     description = discord.ui.TextInput(
-        label="Description", style=discord.TextStyle.paragraph,
+        label="Panel Embed Description", style=discord.TextStyle.paragraph,
         placeholder="Select a category below to open a ticket", max_length=1000,
     )
+    channel_name_format = discord.ui.TextInput(label="Default Ticket Channel Name Format", default="{username}-{number}", placeholder="{username}-{number} or ticket-{number}", max_length=90)
     ticket_message = discord.ui.TextInput(
         label="Default Ticket Welcome Message",
         style=discord.TextStyle.paragraph,
@@ -2173,7 +2181,9 @@ class MultiPanelModal(discord.ui.Modal, title="Create Multi-Panel"):
         builder = {
             "type": "multi",
             "title": str(self.panel_title),
+            "panel_message": str(self.panel_message) if self.panel_message.value else None,
             "description": str(self.description),
+            "channel_name_format": str(self.channel_name_format),
             "ticket_message": str(self.ticket_message) if self.ticket_message.value else None,
             "options": [],
         }
@@ -2241,7 +2251,7 @@ class ManageMultiPanelView(discord.ui.View):
             text=interaction.guild.name,
             icon_url=interaction.guild.icon.url if interaction.guild.icon else None,
         )
-        msg = await channel.send(embed=embed, view=TicketSelectView(builder["options"]))
+        msg = await channel.send(content=builder.get("panel_message") or None, embed=embed, view=TicketSelectView(builder["options"]))
 
         builder["message_id"] = msg.id
         await panels_store.set(msg.id, builder)
