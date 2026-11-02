@@ -735,10 +735,13 @@ async def publish_panel(request):
         return _json(request, {"error": "One or more selected help roles are invalid for this server."}, 400)
     title = str(panel.get("title") or "How can we help?")[:256]
     description = str(panel.get("message") or "Choose an option below and our staff team will help you.")[:4000]
+    panel_content = str(panel.get("panelMessage") or "")[:2000]
+    ticket_welcome = str(panel.get("welcomeMessage") or "Thank you for contacting support.\\nPlease describe your issue and wait for a response.")[:2000]
+    channel_name_format = str(panel.get("channelNameFormat") or "{username}-{number}")[:100]
     types = [x.strip()[:80] for x in str(panel.get("types") or "General Support").splitlines() if x.strip()][:25]
     if not types:
         types = ["General Support"]
-    options = [{"label": x, "description": None, "emoji": None, "ticket_message": None, "category_id": int(category.id) if category else None, "role_id": int(roles[0].id) if roles else None, "role_ids": [int(role.id) for role in roles]} for x in types]
+    options = [{"label": x, "description": None, "emoji": None, "ticket_message": ticket_welcome, "channel_name_format": channel_name_format, "category_id": int(category.id) if category else None, "role_id": int(roles[0].id) if roles else None, "role_ids": [int(role.id) for role in roles]} for x in types]
     embed = discord.Embed(title=title, description=description, color=discord.Color.blurple())
     embed.set_footer(text=guild.name, icon_url=guild.icon.url if guild.icon else None)
     try:
@@ -748,8 +751,8 @@ async def publish_panel(request):
             view = staff_bot.ticket_open_view_cls(label=button_label)
         else:
             view = staff_bot.ticket_select_view_cls(options)
-        msg = await channel.send(embed=embed, view=view)
-        panel_record = {"title": title, "description": description, "channel_id": int(channel.id), "category_id": int(category.id) if category else None, "role_id": int(roles[0].id) if roles else None, "options": options, "message_id": msg.id, "guild_id": guild.id, "created_by_dashboard": True}
+        msg = await channel.send(content=panel_content or None, embed=embed, view=view)
+        panel_record = {"title": title, "description": description, "channel_id": int(channel.id), "category_id": int(category.id) if category else None, "role_id": int(roles[0].id) if roles else None, "options": options, "message_id": msg.id, "guild_id": guild.id, "channel_name_format": channel_name_format, "ticket_message": ticket_welcome, "created_by_dashboard": True}
         await request.app["panels_store"].set(msg.id, panel_record)
         await _audit(request, gid, user, "publish_panel", f"Ticket panel posted in #{channel.name}")
         return _json(request, {"ok": True, "channelId": str(channel.id), "channelName": channel.name, "messageId": str(msg.id)})
