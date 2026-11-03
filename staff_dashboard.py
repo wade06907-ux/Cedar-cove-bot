@@ -738,10 +738,24 @@ async def publish_panel(request):
     panel_content = str(panel.get("panelMessage") or "")[:2000]
     ticket_welcome = str(panel.get("welcomeMessage") or "Thank you for contacting support.\\nPlease describe your issue and wait for a response.")[:2000]
     channel_name_format = str(panel.get("channelNameFormat") or "{username}-{number}")[:100]
-    types = [x.strip()[:80] for x in str(panel.get("types") or "General Support").splitlines() if x.strip()][:25]
-    if not types:
-        types = ["General Support"]
-    options = [{"label": x, "description": None, "emoji": None, "ticket_message": ticket_welcome, "channel_name_format": channel_name_format, "category_id": int(category.id) if category else None, "role_id": int(roles[0].id) if roles else None, "role_ids": [int(role.id) for role in roles]} for x in types]
+    definition = body.get("panelDefinition") if isinstance(body.get("panelDefinition"), dict) else {}
+    children = body.get("childPanels") if isinstance(body.get("childPanels"), list) else []
+    if definition.get("isMulti"):
+        options = []
+        for child in children[:25]:
+            child_label = str(child.get("buttonLabel") or (child.get("types") or ["Ticket"])[0])[:80]
+            child_welcome = str(child.get("welcomeMessage") or ticket_welcome)[:2000]
+            child_format = str(child.get("channelNameFormat") or "{username}-{number}")[:100]
+            child_types = child.get("types") if isinstance(child.get("types"), list) else []
+            child_type = str(child_types[0] if child_types else child_label)[:80]
+            options.append({"label": child_label, "description": None, "emoji": None, "ticket_message": child_welcome, "channel_name_format": child_format, "category_id": int(category.id) if category else None, "role_id": int(roles[0].id) if roles else None, "role_ids": [int(role.id) for role in roles], "ticket_type": child_type})
+        if not options:
+            return _json(request, {"error": "Add at least one single panel to this multi-panel."}, 400)
+    else:
+        types = [x.strip()[:80] for x in str(panel.get("types") or "General Support").splitlines() if x.strip()][:25]
+        if not types:
+            types = ["General Support"]
+        options = [{"label": x, "description": None, "emoji": None, "ticket_message": ticket_welcome, "channel_name_format": channel_name_format, "category_id": int(category.id) if category else None, "role_id": int(roles[0].id) if roles else None, "role_ids": [int(role.id) for role in roles]} for x in types]
     embed = discord.Embed(title=title, description=description, color=discord.Color.blurple())
     embed.set_footer(text=guild.name, icon_url=guild.icon.url if guild.icon else None)
     try:
