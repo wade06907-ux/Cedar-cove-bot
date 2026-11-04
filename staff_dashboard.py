@@ -740,6 +740,16 @@ async def publish_panel(request):
     channel_name_format = str(panel.get("channelNameFormat") or "{username}-{number}")[:100]
     definition = body.get("panelDefinition") if isinstance(body.get("panelDefinition"), dict) else {}
     children = body.get("childPanels") if isinstance(body.get("childPanels"), list) else []
+    if definition.get("isMulti") and not children:
+        ticket_module = (body.get("config") or {}).get("modules", {}).get("tickets", {})
+        raw_definitions = ticket_module.get("panelDefinitionsJson", [])
+        try:
+            saved_definitions = json.loads(raw_definitions) if isinstance(raw_definitions, str) else raw_definitions
+        except (TypeError, ValueError):
+            saved_definitions = []
+        if isinstance(saved_definitions, list):
+            selected_ids = {str(value) for value in (definition.get("singlePanelIds") or [])}
+            children = [item for item in saved_definitions if isinstance(item, dict) and not item.get("isMulti") and (str(item.get("id")) in selected_ids or str(item.get("parentId") or "") == str(definition.get("id")))]
     if definition.get("isMulti"):
         options = []
         for child in children[:25]:
