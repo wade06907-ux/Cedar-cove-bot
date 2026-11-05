@@ -178,7 +178,8 @@ async def _audit_log_reader_loop(bot):
 
                 cursor_key = str(guild.id)
                 cursor = await cursors.get(cursor_key, None) if cursors else None
-                if cursor is None:
+                cursor_text = str(cursor).strip() if cursor is not None else ""
+                if not cursor_text.isdigit():
                     newest = None
                     async for entry in guild.audit_logs(limit=1):
                         newest = entry
@@ -186,11 +187,16 @@ async def _audit_log_reader_loop(bot):
                     if newest is not None and cursors:
                         await cursors.set(cursor_key, str(newest.id))
                         logger.info("Audit cursor initialized (no history replay): guild=%s cursor=%s", guild.id, newest.id)
+                    elif cursor is not None:
+                        logger.warning("Invalid audit cursor reset: guild=%s value=%r", guild.id, cursor)
+                        if cursors:
+                            await cursors.set(cursor_key, "")
                     continue
 
+                cursor_id = int(cursor_text)
                 entries = []
                 async for entry in guild.audit_logs(limit=100):
-                    if entry.id <= int(cursor):
+                    if entry.id <= cursor_id:
                         break
                     entries.append(entry)
                 entries.reverse()
