@@ -52,7 +52,7 @@ def setup_staff(bot, get_store, logger):
                 return await interaction.response.send_message("I cannot manage this member because their highest role is above or equal to mine.", ephemeral=True)
             indexes = [i for i, (_, role) in enumerate(ladder_roles) if role in member.roles]
             current = max(indexes) if indexes else -1
-            target_index = current + 1 if action == "promote" else current - 1
+            target_index = current - 1 if action == "promote" else current + 1
             if action == "demote" and current < 0:
                 return await interaction.response.send_message("That member does not currently hold a staff ladder role.", ephemeral=True)
             if target_index < 0 or target_index >= len(ladder_roles):
@@ -523,36 +523,59 @@ async def _update_staff_ladder_post(guild, event_text="Staff roster updated"):
         return
 
     ranks = []
+    role_tokens = {}
     for item in ladder:
+        if not isinstance(item, dict):
+            continue
         rid = str(item.get("roleId") or "")
         role = guild.get_role(int(rid)) if rid.isdigit() else None
         if role:
-            ranks.append((str(item.get("name") or role.name), role))
+            rank_name = str(item.get("name") or role.name)
+            ranks.append((rank_name, role))
+            slug = re.sub(r"[^a-z0-9]+", "_", rank_name.casefold()).strip("_")
+            role_tokens["role_" + slug] = rank_name
 
     lines = ["# 🌲 Cedar Cove Staff Roster", ""]
     if event_text and event_text not in {"Staff roster updated", "Staff ladder updated"}:
         lines.extend([f"> {event_text}", ""])
-    for rank_name, role in reversed(ranks):
+
+    name_style = str(settings.get("staffRosterNameStyle") or "prefix").lower()
+    prefix_template = str(settings.get("staffRosterPrefix") or "[role_{role_name}]")
+    for rank_name, role in ranks:
         normalized = re.sub(r"[^a-z0-9]+", " ", rank_name.casefold()).strip()
         if normalized == "owner":
-            heading, label = "👑 Owner", "Owner"
+            heading = "👑 Owner"
         elif normalized in {"co owner", "coowner"}:
-            heading, label = "⭐ Co-Owner", "Co-Owner"
+            heading = "⭐ Co-Owner"
         elif normalized in {"admin", "administrator", "administrators"}:
-            heading, label = "🛡️ Administrators", "Admin"
+            heading = "🛡️ Administrators"
         elif normalized in {"mod", "moderator", "moderators"}:
-            heading, label = "🔨 Moderators", "Mod"
+            heading = "🔨 Moderators"
         elif normalized in {"trial staff", "trial", "trainee"}:
-            heading, label = "🌱 Trial Staff", "Trial Staff"
+            heading = "🌱 Trial Staff"
         else:
-            heading, label = "⭐ " + rank_name, rank_name
+            heading = "⭐ " + rank_name
+
         members = [member for member in guild.members if not member.bot and role in member.roles]
         members.sort(key=lambda member: member.display_name.casefold())
         lines.extend(["", f"## {heading}", ""])
-        if members:
-            lines.extend(f"* **[{label}] {member.display_name}**" for member in members)
-        else:
+        if not members:
             lines.append("* *Open*")
+            continue
+
+        slug = re.sub(r"[^a-z0-9]+", "_", rank_name.casefold()).strip("_")
+        token_map = dict(role_tokens)
+        token_map["role_name"] = rank_name
+        token_map["role_" + slug] = rank_name
+        for member in members:
+            if name_style == "display_name":
+                rendered = member.display_name
+            else:
+                prefix = prefix_template.replace("{role_name}", rank_name).replace("{display_name}", member.display_name)
+                for token, value in token_map.items():
+                    prefix = re.sub(r"(?<![a-zA-Z0-9_])" + re.escape(token) + r"(?![a-zA-Z0-9_])", value, prefix, flags=re.IGNORECASE)
+                rendered = prefix + " " + member.display_name
+            lines.append(f"* **{rendered}**")
 
     content = "\n".join(lines)
     if len(content) > 1990:
@@ -1489,6 +1512,10 @@ async def staff_action_settings(request):
         value = str(body.get(key) or "")
         if not value or value not in roles:
             return _json(request, {"error": "Choose a valid Discord role for " + key + "."}, 400)
+    roster_style = str(body.get("staffRosterNameStyle") or "prefix").lower()
+    if roster_style not in {"prefix", "display_name"}:
+        return _json(request, {"error": "Choose a valid staff roster name style."}, 400)
+    roster_prefix = str(body.get("staffRosterPrefix") or "[role_{role_name}]").strip()[:80]
     settings = {
         "promotionChannelId": str(body.get("promotionChannelId") or ""),
         "promotionMessage": str(body.get("promotionMessage") or "")[:1800],
@@ -1497,6 +1524,8 @@ async def staff_action_settings(request):
         "firedChannelId": str(body.get("firedChannelId") or ""),
         "firedMessage": str(body.get("firedMessage") or "")[:1800],
         "staffLadderAnnouncementChannelId": str(body.get("staffLadderAnnouncementChannelId") or ""),
+        "staffRosterNameStyle": roster_style,
+        "staffRosterPrefix": roster_prefix,
         "memberRoleId": str(body.get("memberRoleId")),
         "retiredRoleId": str(body.get("retiredRoleId")),
     }
