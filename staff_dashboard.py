@@ -1531,6 +1531,7 @@ async def staff_action_settings(request):
     }
     config.setdefault("modules", {})["staff_actions"] = settings
     await request.app["staff_store"].set(str(guild.id), config)
+    await _update_staff_ladder_post(guild)
     return _json(request, {"ok": True, "settings": settings})
 
 
