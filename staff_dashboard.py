@@ -573,7 +573,7 @@ async def _update_staff_ladder_post(guild, event_text="Staff roster updated"):
             else:
                 base_name = member.display_name
                 for configured_rank, _ in ranks:
-                    base_name = re.sub(r"^\\s*\\[" + re.escape(configured_rank) + r"\\]\\s*", "", base_name, count=1, flags=re.IGNORECASE)
+                    base_name = re.sub(r"^\s*\[" + re.escape(configured_rank) + r"\]\s*", "", base_name, count=1, flags=re.IGNORECASE)
                 prefix = prefix_template.replace("{role_name}", rank_name).replace("{display_name}", base_name)
                 for token, value in token_map.items():
                     prefix = re.sub(r"(?<![a-zA-Z0-9_])" + re.escape(token) + r"(?![a-zA-Z0-9_])", value, prefix, flags=re.IGNORECASE)
