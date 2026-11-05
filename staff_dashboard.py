@@ -104,7 +104,8 @@ def setup_staff(bot, get_store, logger):
         (_dashboard_log_role_delete, 'on_guild_role_delete'), (_dashboard_log_role_update, 'on_guild_role_update'),
         (_dashboard_log_member_join, 'on_member_join'), (_dashboard_log_member_leave, 'on_member_remove'),
         (_dashboard_log_member_ban, 'on_member_ban'), (_dashboard_log_member_unban, 'on_member_unban'),
-        (_dashboard_log_member_update, 'on_member_update'), (_dashboard_honeypot_message, 'on_message'),
+        (_dashboard_log_member_update, 'on_member_update'), (_dashboard_log_voice_state_update, 'on_voice_state_update'),
+        (_dashboard_honeypot_message, 'on_message'),
     ]
     for listener, event_name in listeners:
         marker = '_dashboard_listener_' + event_name
@@ -200,7 +201,8 @@ async def _audit_log_reader_loop(bot):
                     action_key = getattr(entry.action, "name", str(entry.action)).lower().replace(" ", "_")
                     event_key = {
                         "ban": "memberBan", "unban": "memberUnban",
-                        "member_update": "nicknameUpdate", "member_role_update": "memberRoleUpdate",
+                        "kick": "moderationActions", "member_update": "moderationActions",
+                        "member_role_update": "memberRoleUpdate",
                         "role_create": "roleCreate", "role_delete": "roleDelete", "role_update": "roleUpdate",
                         "channel_create": "channelCreate", "channel_delete": "channelDelete", "channel_update": "channelUpdate",
                         "message_delete": "messageDelete",
@@ -336,6 +338,8 @@ async def _log_event(guild, event_key, title, description):
         'memberUpdate': ('👤', discord.Color.blurple()),
         'nicknameUpdate': ('🏷️', discord.Color.orange()),
         'memberRoleUpdate': ('🎭', discord.Color.blurple()),
+        'voiceUpdate': ('🔊', discord.Color.blurple()),
+        'moderationActions': ('⚖️', discord.Color.orange()),
     }
     emoji, color = event_styles.get(event_key, ('📋', discord.Color.blurple()))
     embed = discord.Embed(
@@ -467,6 +471,24 @@ async def _dashboard_log_role_delete(role):
     await _log_event(role.guild, 'roleDelete', 'Role deleted', '{} ({})'.format(role.name, role.id))
 async def _dashboard_log_role_update(before, after):
     if before.name != after.name or before.permissions != after.permissions or before.color != after.color or before.hoist != after.hoist or before.mentionable != after.mentionable or before.position != after.position: await _log_event(after.guild, 'roleUpdate', 'Role updated', 'Name: {} -> {}\\nPermissions changed: {}\\nColor: {} -> {}\\nDisplayed separately: {} -> {}\\nMentionable: {} -> {}\\nPosition: {} -> {}\\nRole ID: {}'.format(before.name, after.name, before.permissions != after.permissions, before.color, after.color, before.hoist, after.hoist, before.mentionable, after.mentionable, before.position, after.position, after.id))
+async def _dashboard_log_voice_state_update(member, before, after):
+    if member.bot:
+        return
+    before_channel = getattr(before, "channel", None)
+    after_channel = getattr(after, "channel", None)
+    if before_channel == after_channel and before.self_mute == after.self_mute and before.self_deaf == after.self_deaf:
+        return
+    before_name = before_channel.mention if before_channel else "Not connected"
+    after_name = after_channel.mention if after_channel else "Not connected"
+    description = (
+        f"Member: {member} ({member.id})\\n"
+        f"Channel: {before_name} → {after_name}\\n"
+        f"Self mute: {before.self_mute} → {after.self_mute}\\n"
+        f"Self deaf: {before.self_deaf} → {after.self_deaf}"
+    )
+    await _log_event(member.guild, "voiceUpdate", "Voice state updated", description)
+
+
 async def _dashboard_log_member_join(member):
     if not member.bot: await _log_event(member.guild, 'memberJoin', 'Member joined', '{} ({})'.format(member, member.id))
 async def _dashboard_log_member_leave(member):
