@@ -419,16 +419,16 @@ async def _update_staff_ladder_post(guild, event_text="Staff roster updated"):
     lines = ["# 🌲 Cedar Cove Staff Roster", ""]
     for rank_name, role in reversed(rank_roles):
         normalized = re.sub(r"[^a-z0-9]+", " ", rank_name.casefold()).strip()
-        if normalized in {"owner", "co owner", "coowner"}:
+        if normalized == "owner":
             heading = "👑 Owner"
+        elif normalized in {"co owner", "coowner"}:
+            heading = "⭐ Co-Owner"
         elif normalized in {"admin", "administrator", "administrators"}:
             heading = "🛡️ Administrators"
         elif normalized in {"mod", "moderator", "moderators"}:
             heading = "🔨 Moderators"
         elif normalized in {"trial staff", "trial", "trainee"}:
             heading = "🌱 Trial Staff"
-        elif normalized in {"co owner", "coowner"}:
-            heading = "⭐ Co-Owner"
         else:
             heading = "⭐ " + rank_name
         members = [m for m in guild.members if not m.bot and role in m.roles]
