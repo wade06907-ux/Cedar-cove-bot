@@ -167,13 +167,8 @@ async def _audit_log_reader_loop(bot):
         for guild in list(bot.guilds):
             try:
                 settings = await _dashboard_module(bot, guild.id, "logging")
-                channel_id = str(settings.get("channelId") or settings.get("logChannelId") or "")
-                channel = guild.get_channel(int(channel_id)) if channel_id.isdigit() else None
-                if not isinstance(channel, discord.TextChannel):
-                    continue
                 me = guild.me
-                perms = channel.permissions_for(me) if me else None
-                if not perms or not perms.view_audit_log or not perms.send_messages or not perms.embed_links:
+                if not me or not me.guild_permissions.view_audit_log:
                     continue
 
                 cursor_key = str(guild.id)
@@ -203,6 +198,30 @@ async def _audit_log_reader_loop(bot):
 
                 for entry in entries:
                     action_key = getattr(entry.action, "name", str(entry.action)).lower().replace(" ", "_")
+                    event_key = {
+                        "ban": "memberBan", "unban": "memberUnban",
+                        "member_update": "nicknameUpdate", "member_role_update": "memberRoleUpdate",
+                        "role_create": "roleCreate", "role_delete": "roleDelete", "role_update": "roleUpdate",
+                        "channel_create": "channelCreate", "channel_delete": "channelDelete", "channel_update": "channelUpdate",
+                        "message_delete": "messageDelete",
+                    }.get(action_key)
+                    events = settings.get("events") if isinstance(settings.get("events"), dict) else {}
+                    event_settings = events.get(event_key) if event_key and isinstance(events.get(event_key), dict) else {}
+                    if event_key and not event_settings.get("enabled", settings.get(event_key + "Enabled", True)):
+                        continue
+                    channel_id = str(
+                        event_settings.get("channelId")
+                        or (settings.get(event_key + "ChannelId") if event_key else "")
+                        or settings.get("channelId")
+                        or settings.get("logChannelId")
+                        or ""
+                    )
+                    channel = guild.get_channel(int(channel_id)) if channel_id.isdigit() else None
+                    if not isinstance(channel, discord.TextChannel):
+                        continue
+                    perms = channel.permissions_for(me)
+                    if not perms or not perms.view_channel or not perms.send_messages or not perms.embed_links:
+                        continue
                     emoji, color = action_styles.get(action_key, ("📋", discord.Color.blurple()))
                     action = str(entry.action).replace("_", " ").title()
                     actor = entry.user
