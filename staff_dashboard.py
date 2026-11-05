@@ -405,26 +405,41 @@ async def _update_staff_ladder_post(guild, event_text="Staff roster updated"):
     channel = guild.get_channel(int(channel_id)) if channel_id.isdigit() else None
     if not isinstance(channel, discord.TextChannel):
         return
-    role_map = {}
+
     ranks = []
     for item in ladder:
         rid = str(item.get("roleId") or "")
         role = guild.get_role(int(rid)) if rid.isdigit() else None
         if role:
             ranks.append((str(item.get("name") or role.name), role))
-            role_map[role.id] = str(item.get("name") or role.name)
-    index_map = {role.id: i for i, (_, role) in enumerate(ranks)}
-    staff = []
-    for member in guild.members:
-        if member.bot:
-            continue
-        held = [r for r in member.roles if r.id in role_map]
-        if held:
-            highest = max(held, key=lambda r: index_map[r.id])
-            staff.append((index_map[highest.id], role_map[highest.id], member))
-    staff.sort(key=lambda x: (-x[0], x[2].display_name.casefold()))
-    lines = [f"**{rank}** — {member.mention}" for _, rank, member in staff]
-    embed = discord.Embed(title="🌲 Cedar Cove Staff Ladder", description=(event_text + "\n\n" + ("\n".join(lines) or "No staff members are currently on the ladder."))[:4000], color=discord.Color.blurple())
+
+    lines = ["# 🌲 Cedar Cove Staff Roster", ""]
+    for rank_name, role in reversed(ranks):
+        normalized = re.sub(r"[^a-z0-9]+", " ", rank_name.casefold()).strip()
+        if normalized == "owner":
+            heading, label = "👑 Owner", "Owner"
+        elif normalized in {"co owner", "coowner"}:
+            heading, label = "⭐ Co-Owner", "Co-Owner"
+        elif normalized in {"admin", "administrator", "administrators"}:
+            heading, label = "🛡️ Administrators", "Admin"
+        elif normalized in {"mod", "moderator", "moderators"}:
+            heading, label = "🔨 Moderators", "Mod"
+        elif normalized in {"trial staff", "trial", "trainee"}:
+            heading, label = "🌱 Trial Staff", "Trial Staff"
+        else:
+            heading, label = "⭐ " + rank_name, rank_name
+        members = [member for member in guild.members if not member.bot and role in member.roles]
+        members.sort(key=lambda member: member.display_name.casefold())
+        lines.extend(["", f"## {heading}", ""])
+        if members:
+            lines.extend(f"* **[{label}] {member.display_name}**" for member in members)
+        else:
+            lines.append("* *Open*")
+
+    content = "\n".join(lines)
+    if len(content) > 1990:
+        content = content[:1987] + "..."
+
     old_mid = str(settings.get("staffLadderAnnouncementMessageId") or "")
     old_cid = str(settings.get("staffLadderAnnouncementPreviousChannelId") or channel.id)
     if old_mid.isdigit() and old_cid.isdigit():
@@ -432,11 +447,18 @@ async def _update_staff_ladder_post(guild, event_text="Staff roster updated"):
         if isinstance(old_channel, discord.TextChannel):
             try:
                 old_msg = await old_channel.fetch_message(int(old_mid))
+                if old_channel.id == channel.id:
+                    await old_msg.edit(content=content, embeds=[], allowed_mentions=discord.AllowedMentions.none())
+                    settings["staffLadderAnnouncementPreviousChannelId"] = str(channel.id)
+                    modules["staff_actions"] = settings
+                    config["modules"] = modules
+                    await store.set(str(guild.id), config)
+                    return
                 await old_msg.delete()
             except (discord.NotFound, discord.Forbidden, discord.HTTPException):
                 pass
     try:
-        sent = await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False))
+        sent = await channel.send(content, allowed_mentions=discord.AllowedMentions.none())
         settings["staffLadderAnnouncementMessageId"] = str(sent.id)
         settings["staffLadderAnnouncementPreviousChannelId"] = str(channel.id)
         modules["staff_actions"] = settings
@@ -444,7 +466,6 @@ async def _update_staff_ladder_post(guild, event_text="Staff roster updated"):
         await store.set(str(guild.id), config)
     except (discord.Forbidden, discord.HTTPException):
         pass
-
 
 async def _dashboard_log_member_update(before, after):
     if before.guild and before.nick != after.nick: await _log_event(after.guild, 'nicknameUpdate', 'Nickname changed', '{}: {} -> {}'.format(after, before.nick or before.name, after.nick or after.name))
@@ -1352,7 +1373,7 @@ async def staff_action_settings(request):
         return _json(request, {"error": "Invalid JSON body."}, 400)
     channels = {str(c.id) for c in guild.text_channels}
     roles = {str(r.id) for r in guild.roles}
-    for key in ("promotionChannelId", "retirementChannelId", "firedChannelId"):
+    for key in ("promotionChannelId", "retirementChannelId", "firedChannelId", "staffLadderAnnouncementChannelId"):
         value = str(body.get(key) or "")
         if value and value not in channels:
             return _json(request, {"error": "Choose a valid text channel for " + key + "."}, 400)
@@ -1367,6 +1388,7 @@ async def staff_action_settings(request):
         "retirementMessage": str(body.get("retirementMessage") or "")[:1800],
         "firedChannelId": str(body.get("firedChannelId") or ""),
         "firedMessage": str(body.get("firedMessage") or "")[:1800],
+        "staffLadderAnnouncementChannelId": str(body.get("staffLadderAnnouncementChannelId") or ""),
         "memberRoleId": str(body.get("memberRoleId")),
         "retiredRoleId": str(body.get("retiredRoleId")),
     }
