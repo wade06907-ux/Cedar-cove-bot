@@ -392,9 +392,69 @@ async def _dashboard_log_member_ban(guild, user):
     await _log_event(guild, 'memberBan', 'Member banned', '{} ({})'.format(user, user.id))
 async def _dashboard_log_member_unban(guild, user):
     await _log_event(guild, 'memberUnban', 'Member unbanned', '{} ({})'.format(user, user.id))
+async def _update_staff_ladder_post(guild, event_text="Staff roster updated"):
+    bot = guild._state._get_client()
+    store = getattr(bot, "staff_dashboard_store", None)
+    if store is None:
+        return
+    config = await store.get(str(guild.id), {})
+    modules = config.get("modules") or {}
+    ladder = ((modules.get("staff_ladder") or {}).get("items") or [])
+    settings = modules.get("staff_actions") or {}
+    channel_id = str(settings.get("staffLadderAnnouncementChannelId") or "")
+    channel = guild.get_channel(int(channel_id)) if channel_id.isdigit() else None
+    if not isinstance(channel, discord.TextChannel):
+        return
+    role_map = {}
+    ranks = []
+    for item in ladder:
+        rid = str(item.get("roleId") or "")
+        role = guild.get_role(int(rid)) if rid.isdigit() else None
+        if role:
+            ranks.append((str(item.get("name") or role.name), role))
+            role_map[role.id] = str(item.get("name") or role.name)
+    index_map = {role.id: i for i, (_, role) in enumerate(ranks)}
+    staff = []
+    for member in guild.members:
+        if member.bot:
+            continue
+        held = [r for r in member.roles if r.id in role_map]
+        if held:
+            highest = max(held, key=lambda r: index_map[r.id])
+            staff.append((index_map[highest.id], role_map[highest.id], member))
+    staff.sort(key=lambda x: (-x[0], x[2].display_name.casefold()))
+    lines = [f"**{rank}** — {member.mention}" for _, rank, member in staff]
+    embed = discord.Embed(title="🌲 Cedar Cove Staff Ladder", description=(event_text + "\n\n" + ("\n".join(lines) or "No staff members are currently on the ladder."))[:4000], color=discord.Color.blurple())
+    old_mid = str(settings.get("staffLadderAnnouncementMessageId") or "")
+    old_cid = str(settings.get("staffLadderAnnouncementPreviousChannelId") or channel.id)
+    if old_mid.isdigit() and old_cid.isdigit():
+        old_channel = guild.get_channel(int(old_cid))
+        if isinstance(old_channel, discord.TextChannel):
+            try:
+                old_msg = await old_channel.fetch_message(int(old_mid))
+                await old_msg.delete()
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                pass
+    try:
+        sent = await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False))
+        settings["staffLadderAnnouncementMessageId"] = str(sent.id)
+        settings["staffLadderAnnouncementPreviousChannelId"] = str(channel.id)
+        modules["staff_actions"] = settings
+        config["modules"] = modules
+        await store.set(str(guild.id), config)
+    except (discord.Forbidden, discord.HTTPException):
+        pass
+
+
 async def _dashboard_log_member_update(before, after):
     if before.guild and before.nick != after.nick: await _log_event(after.guild, 'nicknameUpdate', 'Nickname changed', '{}: {} -> {}'.format(after, before.nick or before.name, after.nick or after.name))
-    if before.guild and {r.id for r in before.roles} != {r.id for r in after.roles}: await _log_event(after.guild, 'memberRoleUpdate', 'Member roles changed', '{} ({})'.format(after, after.id))
+    if before.guild and {r.id for r in before.roles} != {r.id for r in after.roles}:
+        await _log_event(after.guild, 'memberRoleUpdate', 'Member roles changed', '{} ({})'.format(after, after.id))
+        cfg = await after.guild._state._get_client().staff_dashboard_store.get(str(after.guild.id), {})
+        ladder = (((cfg.get('modules') or {}).get('staff_ladder') or {}).get('items') or [])
+        role_ids = {int(x.get("roleId")) for x in ladder if isinstance(x, dict) and str(x.get("roleId") or "").isdigit()}
+        if any(r.id in role_ids for r in set(after.roles) - set(before.roles)) or any(r.id in role_ids for r in set(before.roles) - set(after.roles)):
+            await _update_staff_ladder_post(after.guild, "Staff ladder updated")
 
 async def _verification_refresh_loop(bot):
     await bot.wait_until_ready()
@@ -1414,9 +1474,11 @@ async def staff_action(request):
         records.pop(member_id, None)
         await store.set(str(guild.id), records)
         if is_fired:
+            await _update_staff_ladder_post(guild, f"{member.display_name} was fired")
             await _send_staff_announcement(guild, settings.get("firedChannelId"), settings.get("firedMessage"), member, actor, reason, "fired")
             await _audit(request, str(guild.id), user, "staff_fired", f"Fired {member_id}: {reason}")
             return _json(request, {"ok": True, "message": ("Staff member fired; dashboard access revoked and website account preserved." if access_revoked else "Staff member fired; no linked website account was found to revoke."), "dashboardAccessRevoked": access_revoked})
+        await _update_staff_ladder_post(guild, f"{member.display_name} retired from staff")
         await _send_staff_announcement(guild, settings.get("retirementChannelId"), settings.get("retirementMessage"), member, actor, reason, "retired")
         await _audit(request, str(guild.id), user, "staff_retired", f"Retired {member_id}: {reason or 'No reason provided'}")
         return _json(request, {"ok": True, "message": ("Staff member retired; dashboard access revoked and website account preserved." if access_revoked else "Staff member retired; no linked website account was found to revoke."), "dashboardAccessRevoked": access_revoked})
@@ -1460,6 +1522,7 @@ async def staff_action(request):
         record.setdefault("history", []).append({"action": action, "rank": target_item.get("name", target_role.name), "by": actor, "at": now, "reason": reason})
         settings = (((config.get("modules") or {}).get("staff_actions") or {}))
         await _send_staff_announcement(guild, settings.get("promotionChannelId"), settings.get("promotionMessage"), member, actor, reason, action, old_rank=old_rank, new_rank=target_item.get("name", target_role.name))
+        await _update_staff_ladder_post(guild, f"{member.display_name} was {action}ed: {old_rank} → {target_item.get('name', target_role.name)}")
     elif action in {"warn", "strike"}:
         if not reason:
             return _json(request, {"error": "Enter a reason for this action."}, 400)
