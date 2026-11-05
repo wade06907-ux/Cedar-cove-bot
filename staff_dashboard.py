@@ -1655,9 +1655,9 @@ async def staff_action(request):
         if not ladder_roles:
             return _json(request, {"error": "None of the saved staff ladder roles still exist in Discord. Re-select the roles and save the ladder."}, 400)
         current_indexes = [i for i, (_, role) in enumerate(ladder_roles) if role in member.roles]
-        # First saved rank is lowest; last saved rank is highest.
+        # First saved rank is highest; last saved rank is lowest.
         current_index = max(current_indexes) if current_indexes else -1
-        next_index = current_index + 1 if action == "promote" else current_index - 1
+        next_index = current_index - 1 if action == "promote" else current_index + 1
         if action == "demote" and current_index < 0:
             return _json(request, {"error": "This member does not currently hold a staff ladder role."}, 400)
         if next_index < 0 or next_index >= len(ladder_roles):
