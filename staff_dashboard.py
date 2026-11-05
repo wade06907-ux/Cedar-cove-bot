@@ -28,6 +28,64 @@ STAFF_ROLE_NAMES = {"owner": "Owner", "co owner": "Co Owner", "admin": "Admin", 
 
 def setup_staff(bot, get_store, logger):
     bot.staff_dashboard_store = get_store("staff_dashboard_configs")
+    if not getattr(bot, "_staff_rank_commands_registered", False):
+        async def _staff_rank_command(interaction, member, action, reason):
+            if not interaction.guild or not interaction.user.guild_permissions.manage_roles:
+                return await interaction.response.send_message("You need to run this in a server and have Manage Roles permission.", ephemeral=True)
+            guild = interaction.guild
+            if member.bot or member.id == interaction.user.id:
+                return await interaction.response.send_message("Choose another human staff member.", ephemeral=True)
+            config = await bot.staff_dashboard_store.get(str(guild.id), {})
+            ladder = (((config.get("modules") or {}).get("staff_ladder") or {}).get("items") or [])
+            ladder_roles = []
+            for item in ladder:
+                if isinstance(item, dict) and str(item.get("roleId") or "").isdigit():
+                    role = guild.get_role(int(item["roleId"]))
+                    if role:
+                        ladder_roles.append((item, role))
+            if not ladder_roles:
+                return await interaction.response.send_message("Set up the staff ladder in the dashboard first.", ephemeral=True)
+            me = guild.me
+            if not me or not me.guild_permissions.manage_roles or any(role >= me.top_role for _, role in ladder_roles):
+                return await interaction.response.send_message("I need Manage Roles and my highest role must be above all staff ladder roles.", ephemeral=True)
+            if member.top_role >= me.top_role:
+                return await interaction.response.send_message("I cannot manage this member because their highest role is above or equal to mine.", ephemeral=True)
+            indexes = [i for i, (_, role) in enumerate(ladder_roles) if role in member.roles]
+            current = max(indexes) if indexes else -1
+            target_index = current + 1 if action == "promote" else current - 1
+            if action == "demote" and current < 0:
+                return await interaction.response.send_message("That member does not currently hold a staff ladder role.", ephemeral=True)
+            if target_index < 0 or target_index >= len(ladder_roles):
+                edge = "highest" if action == "promote" else "lowest"
+                return await interaction.response.send_message(f"That member is already at the {edge} rank.", ephemeral=True)
+            old_rank = ladder_roles[current][0].get("name", ladder_roles[current][1].name) if current >= 0 else "Not on ladder"
+            target_item, target_role = ladder_roles[target_index]
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            try:
+                remove = [role for _, role in ladder_roles if role in member.roles and role != target_role]
+                if remove:
+                    await member.remove_roles(*remove, reason=f"Staff {action} by {interaction.user}: {reason}")
+                if target_role not in member.roles:
+                    await member.add_roles(target_role, reason=f"Staff {action} by {interaction.user}: {reason}")
+            except (discord.Forbidden, discord.HTTPException):
+                return await interaction.followup.send("Discord could not update the member roles. Check my permissions and role hierarchy.", ephemeral=True)
+            word = "promoted" if action == "promote" else "demoted"
+            new_rank = target_item.get("name", target_role.name)
+            await _update_staff_ladder_post(guild, f"{member.display_name} was {word}: {old_rank} -> {new_rank}")
+            await interaction.followup.send(f"{member.mention} was {word} from {old_rank} to {new_rank}.", ephemeral=True)
+
+        @bot.tree.command(name="promote", description="Promote a staff member to the next staff rank.")
+        @discord.app_commands.describe(member="Staff member", reason="Reason for the promotion")
+        async def promote_staff(interaction: discord.Interaction, member: discord.Member, reason: str = "No reason provided"):
+            await _staff_rank_command(interaction, member, "promote", reason[:500])
+
+        @bot.tree.command(name="demote", description="Demote a staff member to the next lower staff rank.")
+        @discord.app_commands.describe(member="Staff member", reason="Reason for the demotion")
+        async def demote_staff(interaction: discord.Interaction, member: discord.Member, reason: str = "No reason provided"):
+            await _staff_rank_command(interaction, member, "demote", reason[:500])
+
+        bot._staff_rank_commands_registered = True
+
     bot.staff_dashboard_audit_store = get_store("staff_dashboard_audit")
     bot.role_nicknames_store = get_store("role_nicknames")
     bot.audit_log_cursor_store = get_store("audit_log_cursors")
@@ -414,6 +472,8 @@ async def _update_staff_ladder_post(guild, event_text="Staff roster updated"):
             ranks.append((str(item.get("name") or role.name), role))
 
     lines = ["# 🌲 Cedar Cove Staff Roster", ""]
+    if event_text and event_text not in {"Staff roster updated", "Staff ladder updated"}:
+        lines.extend([f"> {event_text}", ""])
     for rank_name, role in reversed(ranks):
         normalized = re.sub(r"[^a-z0-9]+", " ", rank_name.casefold()).strip()
         if normalized == "owner":
@@ -1544,7 +1604,8 @@ async def staff_action(request):
         record.setdefault("history", []).append({"action": action, "rank": target_item.get("name", target_role.name), "by": actor, "at": now, "reason": reason})
         settings = (((config.get("modules") or {}).get("staff_actions") or {}))
         await _send_staff_announcement(guild, settings.get("promotionChannelId"), settings.get("promotionMessage"), member, actor, reason, action, old_rank=old_rank, new_rank=target_item.get("name", target_role.name))
-        await _update_staff_ladder_post(guild, f"{member.display_name} was {action}ed: {old_rank} → {target_item.get('name', target_role.name)}")
+        action_word = "promoted" if action == "promote" else "demoted"
+        await _update_staff_ladder_post(guild, f"{member.display_name} was {action_word}: {old_rank} -> {target_item.get('name', target_role.name)}")
     elif action in {"warn", "strike"}:
         if not reason:
             return _json(request, {"error": "Enter a reason for this action."}, 400)
