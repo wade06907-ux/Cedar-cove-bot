@@ -405,26 +405,41 @@ async def _update_staff_ladder_post(guild, event_text="Staff roster updated"):
     channel = guild.get_channel(int(channel_id)) if channel_id.isdigit() else None
     if not isinstance(channel, discord.TextChannel):
         return
+
     role_map = {}
-    ranks = []
+    rank_roles = []
     for item in ladder:
         rid = str(item.get("roleId") or "")
         role = guild.get_role(int(rid)) if rid.isdigit() else None
         if role:
-            ranks.append((str(item.get("name") or role.name), role))
-            role_map[role.id] = str(item.get("name") or role.name)
-    index_map = {role.id: i for i, (_, role) in enumerate(ranks)}
-    staff = []
-    for member in guild.members:
-        if member.bot:
-            continue
-        held = [r for r in member.roles if r.id in role_map]
-        if held:
-            highest = max(held, key=lambda r: index_map[r.id])
-            staff.append((index_map[highest.id], role_map[highest.id], member))
-    staff.sort(key=lambda x: (-x[0], x[2].display_name.casefold()))
-    lines = [f"**{rank}** — {member.mention}" for _, rank, member in staff]
-    embed = discord.Embed(title="🌲 Cedar Cove Staff Ladder", description=(event_text + "\n\n" + ("\n".join(lines) or "No staff members are currently on the ladder."))[:4000], color=discord.Color.blurple())
+            rank_name = str(item.get("name") or role.name)
+            rank_roles.append((rank_name, role))
+            role_map[role.id] = rank_name
+
+    lines = ["# 🌲 Cedar Cove Staff Roster", ""]
+    for rank_name, role in reversed(rank_roles):
+        normalized = re.sub(r"[^a-z0-9]+", " ", rank_name.casefold()).strip()
+        if normalized in {"owner", "co owner", "coowner"}:
+            heading = "👑 Owner"
+        elif normalized in {"admin", "administrator", "administrators"}:
+            heading = "🛡️ Administrators"
+        elif normalized in {"mod", "moderator", "moderators"}:
+            heading = "🔨 Moderators"
+        elif normalized in {"trial staff", "trial", "trainee"}:
+            heading = "🌱 Trial Staff"
+        elif normalized in {"co owner", "coowner"}:
+            heading = "⭐ Co-Owner"
+        else:
+            heading = "⭐ " + rank_name
+        members = [m for m in guild.members if not m.bot and role in m.roles]
+        members.sort(key=lambda m: m.display_name.casefold())
+        lines.extend(["", f"## {heading}", ""])
+        if members:
+            lines.extend(f"* **[{rank_name}]** {m.display_name}" for m in members)
+        else:
+            lines.append("* *Open*")
+    content = "\n".join(lines)[:1990]
+
     old_mid = str(settings.get("staffLadderAnnouncementMessageId") or "")
     old_cid = str(settings.get("staffLadderAnnouncementPreviousChannelId") or channel.id)
     if old_mid.isdigit() and old_cid.isdigit():
@@ -432,11 +447,18 @@ async def _update_staff_ladder_post(guild, event_text="Staff roster updated"):
         if isinstance(old_channel, discord.TextChannel):
             try:
                 old_msg = await old_channel.fetch_message(int(old_mid))
+                if old_channel.id == channel.id:
+                    await old_msg.edit(content=content, embeds=[], allowed_mentions=discord.AllowedMentions.none())
+                    settings["staffLadderAnnouncementPreviousChannelId"] = str(channel.id)
+                    modules["staff_actions"] = settings
+                    config["modules"] = modules
+                    await store.set(str(guild.id), config)
+                    return
                 await old_msg.delete()
             except (discord.NotFound, discord.Forbidden, discord.HTTPException):
                 pass
     try:
-        sent = await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False))
+        sent = await channel.send(content, allowed_mentions=discord.AllowedMentions.none())
         settings["staffLadderAnnouncementMessageId"] = str(sent.id)
         settings["staffLadderAnnouncementPreviousChannelId"] = str(channel.id)
         modules["staff_actions"] = settings
