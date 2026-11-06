@@ -1219,6 +1219,92 @@ async def save_role_nicknames(request):
     return _json(request, {"ok": True, "rules": rules, "updatedMembers": updated})
 
 
+async def get_role_connections(request):
+    user, error = await _authorized(request)
+    if error:
+        return error
+    guild, error = await _guild(request, user)
+    if error:
+        return error
+    storage = getattr(request.app["staff_bot"], "role_connections_storage", None)
+    if storage is None:
+        return _json(request, {"error": "Role Connections storage is unavailable."}, 503)
+    items = await storage.get_connections(guild.id)
+    settings = await storage.get_settings(guild.id)
+    return _json(request, {"guildId": str(guild.id), "items": items, "enabled": settings.get("enabled", True)})
+
+
+async def save_role_connections(request):
+    user, error = await _authorized(request)
+    if error:
+        return error
+    guild, error = await _guild(request, user)
+    if error:
+        return error
+    storage = getattr(request.app["staff_bot"], "role_connections_storage", None)
+    if storage is None:
+        return _json(request, {"error": "Role Connections storage is unavailable."}, 503)
+    try:
+        body = await request.json()
+    except Exception:
+        return _json(request, {"error": "Invalid JSON body."}, 400)
+    items = body.get("items")
+    if not isinstance(items, list) or len(items) > 100:
+        return _json(request, {"error": "Provide up to 100 role connections."}, 400)
+    cleaned = []
+    for item in items:
+        if not isinstance(item, dict):
+            return _json(request, {"error": "Invalid role connection."}, 400)
+        main_id = str(item.get("main_role_id") or "")
+        main_role = guild.get_role(int(main_id)) if main_id.isdigit() else None
+        if main_role is None or main_role.is_default():
+            return _json(request, {"error": "Choose a valid main role."}, 400)
+        conditions = item.get("connection_roles", [])
+        if not isinstance(conditions, list) or not 1 <= len(conditions) <= 10:
+            return _json(request, {"error": "Each connection needs between 1 and 10 conditions."}, 400)
+        seen = set()
+        clean_conditions = []
+        for condition in conditions:
+            if not isinstance(condition, dict):
+                return _json(request, {"error": "Invalid condition."}, 400)
+            role_id = str(condition.get("role_id") or "")
+            role = guild.get_role(int(role_id)) if role_id.isdigit() else None
+            kind = str(condition.get("condition") or "has").lower()
+            if role is None or role.is_default() or kind not in ("has", "not_has"):
+                return _json(request, {"error": "Choose a valid condition role and rule."}, 400)
+            if role.id == main_role.id or role_id in seen:
+                return _json(request, {"error": "Condition roles must be unique and cannot match the main role."}, 400)
+            seen.add(role_id)
+            clean_conditions.append({"role_id": role.id, "condition": kind})
+        mode = str(item.get("combine_mode") or "and").lower()
+        if mode not in ("and", "or"):
+            return _json(request, {"error": "Choose AND or OR for condition logic."}, 400)
+        name = str(item.get("name") or main_role.name).strip()[:80] or main_role.name
+        connection_id = str(item.get("id") or "")
+        if connection_id:
+            existing = await storage.get_connection(guild.id, connection_id)
+            if not existing:
+                return _json(request, {"error": "A role connection no longer exists. Refresh and try again."}, 404)
+            await storage.update_connection(guild.id, connection_id, {
+                "name": name, "main_role_id": main_role.id,
+                "connection_roles": clean_conditions, "combine_mode": mode,
+                "enabled": bool(item.get("enabled", True))
+            })
+            cleaned.append(await storage.get_connection(guild.id, connection_id))
+        else:
+            new_id = await storage.create_connection(guild.id, name, main_role.id, clean_conditions, mode)
+            await storage.update_connection(guild.id, new_id, {"enabled": bool(item.get("enabled", True))})
+            cleaned.append(await storage.get_connection(guild.id, new_id))
+    existing_items = await storage.get_connections(guild.id)
+    keep_ids = {item["id"] for item in cleaned}
+    for old in existing_items:
+        if old["id"] not in keep_ids:
+            await storage.delete_connection(guild.id, old["id"])
+    await storage.update_settings(guild.id, {"enabled": bool(body.get("enabled", True))})
+    await _audit(request, str(guild.id), user, "save_role_connections", f"Saved {len(cleaned)} role connections")
+    return _json(request, {"ok": True, "items": cleaned, "enabled": bool(body.get("enabled", True))})
+
+
 async def list_audit(request):
     user, error = await _authorized(request)
     if error:
@@ -1857,6 +1943,8 @@ def register_staff_routes(app: web.Application):
     app.router.add_get("/api/dashboard/guilds/{guild_id}/honeypot-stats", get_honeypot_stats)
     app.router.add_get("/api/dashboard/guilds/{guild_id}/role-nicknames", get_role_nicknames)
     app.router.add_put("/api/dashboard/guilds/{guild_id}/role-nicknames", save_role_nicknames)
+    app.router.add_get("/api/dashboard/guilds/{guild_id}/role-connections", get_role_connections)
+    app.router.add_put("/api/dashboard/guilds/{guild_id}/role-connections", save_role_connections)
 
 
 _configured_bot = None
