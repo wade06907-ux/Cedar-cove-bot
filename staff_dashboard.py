@@ -1258,7 +1258,11 @@ async def save_role_connections(request):
     except discord.HTTPException as exc:
         request.app["staff_logger"].exception("Could not refresh roles for role connections in guild %s", guild.id)
         return _json(request, {"error": "Discord could not refresh this server's roles. Try again shortly."}, 502)
-    roles_by_id = {str(role.id): role for role in live_roles}
+    # Discord's REST role refresh can briefly disagree with the gateway cache.
+    # The dashboard role dropdown is populated from guild.roles, so validate
+    # against both sources to avoid rejecting a role the user just selected.
+    roles_by_id = {str(role.id): role for role in guild.roles}
+    roles_by_id.update({str(role.id): role for role in live_roles})
     cleaned = []
     for item in items:
         if not isinstance(item, dict):
