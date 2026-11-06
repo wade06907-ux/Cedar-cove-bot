@@ -1251,14 +1251,22 @@ async def save_role_connections(request):
     items = body.get("items")
     if not isinstance(items, list) or len(items) > 100:
         return _json(request, {"error": "Provide up to 100 role connections."}, 400)
+    try:
+        live_roles = await guild.fetch_roles()
+    except discord.Forbidden:
+        return _json(request, {"error": "The bot cannot read this server's roles. Check its View Channels and role access."}, 403)
+    except discord.HTTPException as exc:
+        request.app["staff_logger"].exception("Could not refresh roles for role connections in guild %s", guild.id)
+        return _json(request, {"error": "Discord could not refresh this server's roles. Try again shortly."}, 502)
+    roles_by_id = {str(role.id): role for role in live_roles}
     cleaned = []
     for item in items:
         if not isinstance(item, dict):
             return _json(request, {"error": "Invalid role connection."}, 400)
-        main_id = str(item.get("main_role_id") or "")
-        main_role = guild.get_role(int(main_id)) if main_id.isdigit() else None
+        main_id = str(item.get("main_role_id") or "").strip()
+        main_role = roles_by_id.get(main_id)
         if main_role is None or main_role.is_default():
-            return _json(request, {"error": "Choose a valid main role."}, 400)
+            return _json(request, {"error": f"The selected main role (ID {main_id or 'missing'}) was not found in {guild.name}. Refresh the role list and select it again."}, 400)
         conditions = item.get("connection_roles", [])
         if not isinstance(conditions, list) or not 1 <= len(conditions) <= 10:
             return _json(request, {"error": "Each connection needs between 1 and 10 conditions."}, 400)
@@ -1267,11 +1275,11 @@ async def save_role_connections(request):
         for condition in conditions:
             if not isinstance(condition, dict):
                 return _json(request, {"error": "Invalid condition."}, 400)
-            role_id = str(condition.get("role_id") or "")
-            role = guild.get_role(int(role_id)) if role_id.isdigit() else None
+            role_id = str(condition.get("role_id") or "").strip()
+            role = roles_by_id.get(role_id)
             kind = str(condition.get("condition") or "has").lower()
             if role is None or role.is_default() or kind not in ("has", "not_has"):
-                return _json(request, {"error": "Choose a valid condition role and rule."}, 400)
+                return _json(request, {"error": f"The selected condition role (ID {role_id or 'missing'}) was not found in {guild.name}, or its rule is invalid. Refresh the role list and select it again."}, 400)
             if role.id == main_role.id or role_id in seen:
                 return _json(request, {"error": "Condition roles must be unique and cannot match the main role."}, 400)
             seen.add(role_id)
