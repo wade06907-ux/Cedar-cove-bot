@@ -3256,6 +3256,7 @@ bot.ticket_select_view_cls = TicketSelectView
 from staff_dashboard import setup_staff, register_staff_routes  # noqa: E402
 bot.auth_db = cedar_cove_mongo.get_default_database("authdb")
 setup_staff(bot, get_store, logger)
+bot.role_connections_storage = role_connections_storage
 
 _processing_members: set[tuple[int, int]] = set()
 
@@ -3271,32 +3272,7 @@ async def on_interaction(interaction: discord.Interaction):
 # Slash commands — Role Connections subsystem
 # ---------------------------------------------------------------------------
 
-@bot.tree.command(name="roleconnections", description="Manage automatic role connections for this server.")
-@app_commands.guild_only()
-@app_commands.default_permissions(administrator=True)
-async def roleconnections(interaction: discord.Interaction):
-    if not await require_admin(interaction):
-        return
-    embed = build_dashboard_embed(interaction.guild)
-    view = DashboardView()
-    await interaction.response.send_message(embed=embed, view=view)
-
-
-@roleconnections.error
-async def roleconnections_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
-    if isinstance(error, app_commands.MissingPermissions):
-        message = "🚫 You need the **Administrator** permission to use this command."
-    elif isinstance(error, app_commands.NoPrivateMessage):
-        message = "🚫 This command can only be used inside a server."
-    else:
-        logger.exception("Unhandled error in /roleconnections", exc_info=error)
-        message = "⚠️ An unexpected error occurred while running this command."
-
-    if interaction.response.is_done():
-        await interaction.followup.send(message, ephemeral=True)
-    else:
-        await interaction.response.send_message(message, ephemeral=True)
-
+# Role Connections are managed from the dashboard's Role Manager tab.
 
 @bot.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
