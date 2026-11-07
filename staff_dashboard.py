@@ -10,6 +10,7 @@ import os
 import asyncio
 import base64
 import html
+import io
 import re
 import time
 from datetime import datetime, timezone
@@ -748,7 +749,9 @@ async def list_channels(request):
     for channel in sorted(guild.channels, key=lambda c: (getattr(c, "position", 0), c.name.casefold())):
         if isinstance(channel, discord.CategoryChannel):
             kind = "category"
-        elif isinstance(channel, discord.TextChannel) or isinstance(channel, discord.ForumChannel):
+        elif isinstance(channel, discord.ForumChannel):
+            kind = "forum"
+        elif isinstance(channel, discord.TextChannel):
             kind = "text"
         elif isinstance(channel, discord.VoiceChannel):
             kind = "voice"
@@ -1027,18 +1030,76 @@ async def send_module_message(request):
     if not str(channel_id or "").isdigit():
         return _json(request, {"error": "Choose and save a destination channel first."}, 400)
     channel = guild.get_channel(int(channel_id))
-    if not isinstance(channel, discord.TextChannel):
-        return _json(request, {"error": "The configured destination is not a text channel in this server."}, 400)
+    if not isinstance(channel, (discord.TextChannel, discord.ForumChannel)):
+        return _json(request, {"error": "Choose a text or forum channel in this server."}, 400)
     template = str(module.get("template") or f"{module_name.title()} notification")[:1800]
-    content = str(body.get("message") or template)[:1900]
-    if not content.strip():
-        return _json(request, {"error": "Message cannot be empty."}, 400)
+    content = str(body.get("message") or (template if module_name != "custom_message" else ""))[:2000]
+    post_name = str(body.get("postName") or "").strip()[:100]
+    raw_embed = body.get("embed") if isinstance(body.get("embed"), dict) else {}
+    embed = None
+    embed_title = str(raw_embed.get("title") or "").strip()[:256]
+    embed_description = str(raw_embed.get("description") or "").strip()[:4000]
+    embed_image = str(raw_embed.get("imageUrl") or "").strip()
+    embed_color = str(raw_embed.get("color") or "#315b9b").strip()
+    if embed_title or embed_description or embed_image:
+        try:
+            color_value = int(embed_color.lstrip("#"), 16) if re.fullmatch(r"#?[0-9a-fA-F]{6}", embed_color) else 0x315B9B
+            embed = discord.Embed(title=embed_title or None, description=embed_description or None, color=color_value)
+            if embed_image:
+                parsed_image = urlparse(embed_image)
+                if parsed_image.scheme not in {"http", "https"} or not parsed_image.netloc:
+                    return _json(request, {"error": "Embed image must be a valid HTTP or HTTPS URL."}, 400)
+                embed.set_image(url=embed_image)
+        except (TypeError, ValueError):
+            return _json(request, {"error": "The embed settings are invalid."}, 400)
+    raw_files = body.get("files") if isinstance(body.get("files"), list) else []
+    if len(raw_files) > 5:
+        return _json(request, {"error": "Attach no more than five images."}, 400)
+    discord_files = []
+    total_bytes = 0
+    allowed_types = {"image/png", "image/jpeg", "image/gif", "image/webp"}
     try:
-        await channel.send(content, allowed_mentions=discord.AllowedMentions.none())
+        for item in raw_files:
+            if not isinstance(item, dict):
+                continue
+            filename = os.path.basename(str(item.get("filename") or "image"))[:100]
+            content_type = str(item.get("contentType") or "").lower()
+            if content_type not in allowed_types:
+                return _json(request, {"error": "Only PNG, JPG, GIF, and WEBP image attachments are supported."}, 400)
+            encoded = str(item.get("data") or "")
+            if not encoded:
+                continue
+            raw = base64.b64decode(encoded, validate=True)
+            if len(raw) > 8 * 1024 * 1024:
+                return _json(request, {"error": f"{filename} is larger than 8 MB."}, 400)
+            total_bytes += len(raw)
+            if total_bytes > 20 * 1024 * 1024:
+                return _json(request, {"error": "The combined image attachments cannot exceed 20 MB."}, 400)
+            discord_files.append(discord.File(io.BytesIO(raw), filename=filename))
+    except (ValueError, TypeError):
+        return _json(request, {"error": "An image attachment could not be read."}, 400)
+    if not content.strip() and embed is None and not discord_files:
+        return _json(request, {"error": "Add message text, an embed, or an image."}, 400)
+    if isinstance(channel, discord.ForumChannel) and not post_name:
+        return _json(request, {"error": "Forum posts need a post name."}, 400)
+    try:
+        if isinstance(channel, discord.ForumChannel):
+            created = await channel.create_thread(
+                name=post_name,
+                content=content or None,
+                embed=embed,
+                files=discord_files or None,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+            thread = getattr(created, "thread", None)
+            starter = getattr(created, "message", None)
+            await _audit(request, gid, user, "send_message", f"Forum post created in #{channel.name}: {post_name}")
+            return _json(request, {"ok": True, "channelId": str(channel.id), "channelName": channel.name, "threadId": str(thread.id) if thread else None, "messageId": str(starter.id) if starter else None, "kind": "forum"})
+        sent = await channel.send(content=content or None, embed=embed, files=discord_files or None, allowed_mentions=discord.AllowedMentions.none())
         await _audit(request, gid, user, "send_message", f"{module_name} message sent to #{channel.name}")
-        return _json(request, {"ok": True, "channelId": str(channel.id), "channelName": channel.name})
+        return _json(request, {"ok": True, "channelId": str(channel.id), "channelName": channel.name, "messageId": str(sent.id), "kind": "text"})
     except discord.Forbidden:
-        return _json(request, {"error": "The bot cannot send messages in that channel."}, 403)
+        return _json(request, {"error": "The bot cannot send messages in that channel. Check its permissions."}, 403)
     except discord.HTTPException as exc:
         return _json(request, {"error": f"Discord could not send the message (HTTP {exc.status})."}, 502)
 
