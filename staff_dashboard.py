@@ -23,7 +23,7 @@ import discord
 from aiohttp import web
 
 AUTH_API_URL = (os.getenv("AUTH_API_URL") or "https://verification-server-gjqt.onrender.com").rstrip("/")
-DASHBOARD_API_BUILD = "staff-config-sync-2026-11-05"
+DASHBOARD_API_BUILD = "scnx-message-editor-2026-11-07"
 STAFF_ROLE_NAMES = {"owner": "Owner", "co owner": "Co Owner", "admin": "Admin", "administrator": "Admin"}
 
 
