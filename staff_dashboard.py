@@ -247,8 +247,7 @@ async def _audit_log_reader_loop(bot):
 
                     details = []
                     changes = getattr(entry, "changes", None)
-                    # discord.py exposes AuditLogChanges as an object, not an iterable.
-                    # Read its known before/after attributes safely.
+                    # discord.py exposes AuditLogChanges as an object, not an iterable.                    # Read its known before/after attributes safely.
                     change_keys = (
                         "name", "nick", "topic", "bitrate", "slowmode_delay", "rtc_region",
                         "nsfw", "hoist", "mentionable", "permissions", "color", "position",
@@ -497,8 +496,7 @@ async def _dashboard_log_voice_state_update(member, before, after):
         f"Channel: {before_name} → {after_name}\\n"
         f"Self mute: {before.self_mute} → {after.self_mute}\\n"
         f"Self deaf: {before.self_deaf} → {after.self_deaf}"
-    )
-    await _log_event(member.guild, "voiceUpdate", "Voice state updated", description)
+    )    await _log_event(member.guild, "voiceUpdate", "Voice state updated", description)
 
 
 async def _dashboard_log_member_join(member):
@@ -747,8 +745,7 @@ async def list_channels(request):
         return error
     channels = []
     for channel in sorted(guild.channels, key=lambda c: (getattr(c, "position", 0), c.name.casefold())):
-        if isinstance(channel, discord.CategoryChannel):
-            kind = "category"
+        if isinstance(channel, discord.CategoryChannel):            kind = "category"
         elif isinstance(channel, discord.ForumChannel):
             kind = "forum"
         elif isinstance(channel, discord.TextChannel):
@@ -997,8 +994,7 @@ async def publish_panel(request):
         panel_record = {"title": title, "description": description, "channel_id": int(channel.id), "category_id": int(category.id) if category else None, "role_id": int(roles[0].id) if roles else None, "options": options, "message_id": msg.id, "guild_id": guild.id, "channel_name_format": channel_name_format, "ticket_message": ticket_welcome, "created_by_dashboard": True}
         await request.app["panels_store"].set(msg.id, panel_record)
         await _audit(request, gid, user, "publish_panel", f"Ticket panel posted in #{channel.name}")
-        return _json(request, {"ok": True, "channelId": str(channel.id), "channelName": channel.name, "messageId": str(msg.id)})
-    except discord.Forbidden:
+        return _json(request, {"ok": True, "channelId": str(channel.id), "channelName": channel.name, "messageId": str(msg.id)})    except discord.Forbidden:
         return _json(request, {"error": "Discord denied the request. Check the bot's channel permissions."}, 403)
     except discord.HTTPException as exc:
         return _json(request, {"error": f"Discord could not post the panel (HTTP {exc.status})."}, 502)
@@ -1088,7 +1084,7 @@ async def send_module_message(request):
                 name=post_name,
                 content=content or None,
                 embed=embed,
-                files=discord_files or None,
+                files=discord_files,
                 allowed_mentions=discord.AllowedMentions.none(),
             )
             thread = getattr(created, "thread", None)
@@ -1247,8 +1243,7 @@ async def save_role_nicknames(request):
         if role is None or role.is_default():
             return _json(request, {"error": "Choose a valid role from this server."}, 400)
         if role_id in seen:
-            return _json(request, {"error": "Each role can have only one nickname rule."}, 400)
-        seen.add(role_id)
+            return _json(request, {"error": "Each role can have only one nickname rule."}, 400)        seen.add(role_id)
         prefix, suffix = str(item.get("prefix") or "")[:20], str(item.get("suffix") or "")[:20]
         if not prefix and not suffix:
             return _json(request, {"error": "Each rule needs a prefix, suffix, or both."}, 400)
@@ -1497,8 +1492,7 @@ def _member_can_manage_staff(member):
 
 async def _staff_manager(request):
     user, error = await _authorized(request)
-    if error:
-        return None, None, error
+    if error:        return None, None, error
 
     # Dashboard access is approved in the verification server's users.whitelisted field.
     if not bool(user.get("whitelisted", False)):
@@ -1747,8 +1741,7 @@ async def staff_action(request):
     if action in {"retire", "fire", "fired"}:
         is_fired = action in {"fire", "fired"}
         if is_fired and not reason:
-            return _json(request, {"error": "A reason is required to fire a staff member."}, 400)
-        if str(member.id) == str(user.get("discordId")) and is_fired:
+            return _json(request, {"error": "A reason is required to fire a staff member."}, 400)        if str(member.id) == str(user.get("discordId")) and is_fired:
             return _json(request, {"error": "You cannot fire yourself through staff management."}, 400)
         config = await request.app["staff_store"].get(str(guild.id), {})
         settings = ((config.get("modules") or {}).get("staff_actions") or {})
@@ -1997,8 +1990,7 @@ def register_staff_routes(app: web.Application):
     app.router.add_get("/api/dashboard/staff", staff_list)
     app.router.add_get("/api/dashboard/staff-actions-settings", staff_action_settings)
     app.router.add_put("/api/dashboard/staff-actions-settings", staff_action_settings)
-    app.router.add_get("/api/dashboard/staff/{member_id}", staff_detail)
-    app.router.add_post("/api/dashboard/staff/{member_id}/action", staff_action)
+    app.router.add_get("/api/dashboard/staff/{member_id}", staff_detail)    app.router.add_post("/api/dashboard/staff/{member_id}/action", staff_action)
     app.router.add_get("/api/dashboard/status", api_status)
     app.router.add_get("/api/dashboard/guilds", list_guilds)
     app.router.add_get("/api/dashboard/guilds/{guild_id}/channels", list_channels)
