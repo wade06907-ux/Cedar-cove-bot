@@ -247,8 +247,7 @@ async def _audit_log_reader_loop(bot):
 
                     details = []
                     changes = getattr(entry, "changes", None)
-                    # discord.py exposes AuditLogChanges as an object, not an iterable.                    # Read its known before/after attributes safely.
-                    change_keys = (
+                    # discord.py exposes AuditLogChanges as an object, not an iterable.                    # Read its known before/after attributes safely.                    change_keys = (
                         "name", "nick", "topic", "bitrate", "slowmode_delay", "rtc_region",
                         "nsfw", "hoist", "mentionable", "permissions", "color", "position",
                         "communication_disabled_until", "deaf", "mute", "roles", "channel",
@@ -496,8 +495,8 @@ async def _dashboard_log_voice_state_update(member, before, after):
         f"Channel: {before_name} → {after_name}\\n"
         f"Self mute: {before.self_mute} → {after.self_mute}\\n"
         f"Self deaf: {before.self_deaf} → {after.self_deaf}"
-    )    await _log_event(member.guild, "voiceUpdate", "Voice state updated", description)
-
+    )
+    await _log_event(member.guild, "voiceUpdate", "Voice state updated", description)
 
 async def _dashboard_log_member_join(member):
     if not member.bot: await _log_event(member.guild, 'memberJoin', 'Member joined', '{} ({})'.format(member, member.id))
@@ -747,8 +746,7 @@ async def list_channels(request):
     for channel in sorted(guild.channels, key=lambda c: (getattr(c, "position", 0), c.name.casefold())):
         if isinstance(channel, discord.CategoryChannel):            kind = "category"
         elif isinstance(channel, discord.ForumChannel):
-            kind = "forum"
-        elif isinstance(channel, discord.TextChannel):
+            kind = "forum"        elif isinstance(channel, discord.TextChannel):
             kind = "text"
         elif isinstance(channel, discord.VoiceChannel):
             kind = "voice"
@@ -999,7 +997,6 @@ async def publish_panel(request):
     except discord.HTTPException as exc:
         return _json(request, {"error": f"Discord could not post the panel (HTTP {exc.status})."}, 502)
 
-
 async def send_module_message(request):
     user, error = await _authorized(request)
     if error:
@@ -1247,8 +1244,7 @@ async def save_role_nicknames(request):
         prefix, suffix = str(item.get("prefix") or "")[:20], str(item.get("suffix") or "")[:20]
         if not prefix and not suffix:
             return _json(request, {"error": "Each rule needs a prefix, suffix, or both."}, 400)
-        rules.append({"roleId": role_id, "roleName": role.name, "prefix": prefix, "suffix": suffix})
-    if not guild.me.guild_permissions.manage_nicknames:
+        rules.append({"roleId": role_id, "roleName": role.name, "prefix": prefix, "suffix": suffix})    if not guild.me.guild_permissions.manage_nicknames:
         return _json(request, {"error": "The bot needs Manage Nicknames permission to apply role nickname rules."}, 403)
     store = request.app["role_nicknames_store"]
     previous_rules = await store.get(gid, [])
@@ -1497,8 +1493,7 @@ async def _staff_manager(request):
     # Dashboard access is approved in the verification server's users.whitelisted field.
     if not bool(user.get("whitelisted", False)):
         return None, None, _json(request, {
-            "error": "Your website account has not been approved for dashboard access."
-        }, 403)
+            "error": "Your website account has not been approved for dashboard access."        }, 403)
 
     guild = await _staff_guild(request, user)
     if guild is None:
@@ -1747,8 +1742,7 @@ async def staff_action(request):
         settings = ((config.get("modules") or {}).get("staff_actions") or {})
         member_role = guild.get_role(int(settings.get("memberRoleId") or 0)) if str(settings.get("memberRoleId") or "").isdigit() else None
         retired_role = guild.get_role(int(settings.get("retiredRoleId") or 0)) if str(settings.get("retiredRoleId") or "").isdigit() else None
-        if not member_role or not retired_role:
-            return _json(request, {"error": "Configure the Member and Retired from Staff roles in Staff Management settings first."}, 400)
+        if not member_role or not retired_role:            return _json(request, {"error": "Configure the Member and Retired from Staff roles in Staff Management settings first."}, 400)
         ladder = (((config.get("modules") or {}).get("staff_ladder") or {}).get("items") or [])
         staff_roles = {role for role in member.roles if re.sub(r"[^a-z0-9]+", " ", role.name.casefold()).strip() in {"owner", "co owner", "coowner", "admin", "administrator", "mod", "moderator", "trial staff", "helper", "socials manager", "staff"}}
         for item in ladder:
@@ -1997,8 +1991,7 @@ def register_staff_routes(app: web.Application):
     app.router.add_get("/api/dashboard/guilds/{guild_id}/roles", list_roles)
     app.router.add_get("/api/dashboard/guilds/{guild_id}/staff-ladder", get_staff_ladder)
     app.router.add_put("/api/dashboard/guilds/{guild_id}/staff-ladder", save_staff_ladder)
-    app.router.add_get("/api/dashboard/guilds/{guild_id}/config", get_config)
-    app.router.add_put("/api/dashboard/guilds/{guild_id}/config", save_config)
+    app.router.add_get("/api/dashboard/guilds/{guild_id}/config", get_config)    app.router.add_put("/api/dashboard/guilds/{guild_id}/config", save_config)
     # Compatibility aliases for dashboard versions that use /settings.
     app.router.add_get("/api/dashboard/guilds/{guild_id}/settings", get_config)
     app.router.add_put("/api/dashboard/guilds/{guild_id}/settings", save_config)
