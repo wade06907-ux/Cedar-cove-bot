@@ -746,9 +746,11 @@ async def list_channels(request):
         return error
     channels = []
     for channel in sorted(guild.channels, key=lambda c: (getattr(c, "position", 0), c.name.casefold())):
-        if isinstance(channel, discord.CategoryChannel):            kind = "category"
+        if isinstance(channel, discord.CategoryChannel):
+            kind = "category"
         elif isinstance(channel, discord.ForumChannel):
-            kind = "forum"        elif isinstance(channel, discord.TextChannel):
+            kind = "forum"
+        elif isinstance(channel, discord.TextChannel):
             kind = "text"
         elif isinstance(channel, discord.VoiceChannel):
             kind = "voice"
