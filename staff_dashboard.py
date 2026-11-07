@@ -1493,7 +1493,8 @@ def _member_can_manage_staff(member):
 
 async def _staff_manager(request):
     user, error = await _authorized(request)
-    if error:        return None, None, error
+    if error:
+        return None, None, error
 
     # Dashboard access is approved in the verification server's users.whitelisted field.
     if not bool(user.get("whitelisted", False)):
@@ -1748,7 +1749,8 @@ async def staff_action(request):
         settings = ((config.get("modules") or {}).get("staff_actions") or {})
         member_role = guild.get_role(int(settings.get("memberRoleId") or 0)) if str(settings.get("memberRoleId") or "").isdigit() else None
         retired_role = guild.get_role(int(settings.get("retiredRoleId") or 0)) if str(settings.get("retiredRoleId") or "").isdigit() else None
-        if not member_role or not retired_role:            return _json(request, {"error": "Configure the Member and Retired from Staff roles in Staff Management settings first."}, 400)
+        if not member_role or not retired_role:
+            return _json(request, {"error": "Configure the Member and Retired from Staff roles in Staff Management settings first."}, 400)
         ladder = (((config.get("modules") or {}).get("staff_ladder") or {}).get("items") or [])
         staff_roles = {role for role in member.roles if re.sub(r"[^a-z0-9]+", " ", role.name.casefold()).strip() in {"owner", "co owner", "coowner", "admin", "administrator", "mod", "moderator", "trial staff", "helper", "socials manager", "staff"}}
         for item in ladder:
