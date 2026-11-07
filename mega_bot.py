@@ -493,7 +493,7 @@ async def root_handler(request: web.Request) -> web.Response:
 
 
 async def start_health_server() -> web.AppRunner:
-    app = web.Application()
+    app = web.Application(client_max_size=30 * 1024 * 1024)
     app.router.add_get("/", root_handler)
     app.router.add_get("/health", health_handler)
     register_staff_routes(app)
