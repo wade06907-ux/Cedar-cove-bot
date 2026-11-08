@@ -1121,7 +1121,8 @@ async def send_verification_message(request):
         return _json(request, {"error": "Enable and keep verification settings before publishing."}, 400)
     content = str(module.get("message") or "Read the instructions below, then type the required text in this channel.")[:4000]
     embed = discord.Embed(title="Cedar Cove Verification", description=content, color=discord.Color.blurple())
-    embed.add_field(name="Type this exact text to verify", value=str(module.get("requiredText") or "Not configured — staff must set the required text.")[:1024], inline=False)\n    embed.set_footer(text="Cedar Cove • Type the exact text above to unlock the server")
+    embed.add_field(name="Type this exact text to verify", value=str(module.get("requiredText") or "Not configured — staff must set the required text.")[:1024], inline=False)
+    embed.set_footer(text="Cedar Cove • Type the exact text above to unlock the server")
     view = None
     merge = bool(body.get("merge"))
     message_id = str(module.get("messageId") or "")
