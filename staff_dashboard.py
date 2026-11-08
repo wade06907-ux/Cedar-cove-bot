@@ -330,9 +330,54 @@ def setup_staff(bot, get_store, logger):
     bot.staff_dashboard_audit_store = get_store("staff_dashboard_audit")
     bot.role_nicknames_store = get_store("role_nicknames")
     bot.audit_log_cursor_store = get_store("audit_log_cursors")
+    bot.verification_pending_store = get_store("verification_pending")
+    class VerificationView(discord.ui.View):
+        def __init__(self):
+            super().__init__(timeout=None)
+
+        @discord.ui.button(label="Verify", style=discord.ButtonStyle.success, emoji="✅", custom_id="cedar_cove:verify")
+        async def verify_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+            if not interaction.guild or not isinstance(interaction.user, discord.Member):
+                return await interaction.response.send_message("Use this button inside the server.", ephemeral=True)
+            config = await bot.staff_dashboard_store.get(str(interaction.guild.id), {})
+            module = ((config.get("modules") or {}).get("verification") or {})
+            if not module.get("enabled"):
+                return await interaction.response.send_message("Verification is currently unavailable. Please contact staff.", ephemeral=True)
+            verified_id = str(module.get("verifiedRoleId") or "")
+            unverified_id = str(module.get("unverifiedRoleId") or "")
+            verified_role = interaction.guild.get_role(int(verified_id)) if verified_id.isdigit() else None
+            unverified_role = interaction.guild.get_role(int(unverified_id)) if unverified_id.isdigit() else None
+            if verified_role is None:
+                return await interaction.response.send_message("The verified role is not configured. Please contact staff.", ephemeral=True)
+            member = interaction.user
+            if verified_role in member.roles:
+                return await interaction.response.send_message("You are already verified. Welcome to Cedar Cove!", ephemeral=True)
+            try:
+                await member.add_roles(verified_role, reason="Completed Cedar Cove verification")
+                if unverified_role and unverified_role in member.roles:
+                    await member.remove_roles(unverified_role, reason="Completed Cedar Cove verification")
+                pending = getattr(bot, "verification_pending_store", None)
+                if pending:
+                    await pending.delete(f"{interaction.guild.id}:{member.id}")
+            except discord.Forbidden:
+                return await interaction.response.send_message("I cannot assign the verification roles. Please contact staff.", ephemeral=True)
+            except discord.HTTPException:
+                return await interaction.response.send_message("Discord could not complete verification. Please try again.", ephemeral=True)
+            await interaction.response.send_message("✅ You are verified! Welcome to Cedar Cove.", ephemeral=True)
+
+    bot.verification_view_cls = VerificationView
+    if not getattr(bot, "_verification_view_registered", False):
+        async def _register_verification_view():
+            bot.add_view(VerificationView())
+        bot.add_listener(_register_verification_view, "on_ready")
+        bot._verification_view_registered = True
+
     if not getattr(bot, "_role_nickname_listener_added", False):
         bot.add_listener(_role_nickname_member_update, "on_member_update")
         bot._role_nickname_listener_added = True
+    if not getattr(bot, "_verification_member_join_listener_added", False):
+        bot.add_listener(_verification_member_join, "on_member_join")
+        bot._verification_member_join_listener_added = True
     if not getattr(bot, "_welcome_leave_listeners_added", False):
         bot.add_listener(_welcome_leave_member_join, "on_member_join")
         bot.add_listener(_welcome_leave_member_remove, "on_member_remove")
@@ -360,6 +405,13 @@ def setup_staff(bot, get_store, logger):
                 bot._audit_log_reader_task_started = True
         bot.add_listener(_start_audit_log_reader, 'on_ready')
         bot._audit_log_reader_listener_added = True
+    if not getattr(bot, "_verification_enforcement_listener_added", False):
+        async def _start_verification_enforcement():
+            if not getattr(bot, "_verification_enforcement_task_started", False):
+                bot._verification_enforcement_task = asyncio.create_task(_verification_enforcement_loop(bot))
+                bot._verification_enforcement_task_started = True
+        bot.add_listener(_start_verification_enforcement, "on_ready")
+        bot._verification_enforcement_listener_added = True
     if not getattr(bot, '_verification_refresh_listener_added', False):
         async def _start_verification_refresh():
             if not getattr(bot, '_verification_refresh_task_started', False):
@@ -861,36 +913,177 @@ async def _dashboard_log_member_update(before, after):
         if any(r.id in role_ids for r in set(after.roles) - set(before.roles)) or any(r.id in role_ids for r in set(before.roles) - set(after.roles)):
             await _update_staff_ladder_post(after.guild, "Staff ladder updated")
 
+async def _verification_member_join(member):
+    bot = member.guild._state._get_client()
+    store = getattr(bot, "staff_dashboard_store", None)
+    pending = getattr(bot, "verification_pending_store", None)
+    if store is None or pending is None:
+        return
+    config = await store.get(str(member.guild.id), {})
+    module = ((config.get("modules") or {}).get("verification") or {})
+    if not module.get("enabled"):
+        return
+    verified_id = str(module.get("verifiedRoleId") or "")
+    unverified_id = str(module.get("unverifiedRoleId") or "")
+    verified_role = member.guild.get_role(int(verified_id)) if verified_id.isdigit() else None
+    unverified_role = member.guild.get_role(int(unverified_id)) if unverified_id.isdigit() else None
+    if verified_role is None:
+        return
+    if verified_role in member.roles:
+        return
+    if unverified_role and unverified_role not in member.roles:
+        try:
+            await member.add_roles(unverified_role, reason="Awaiting Cedar Cove verification")
+        except (discord.Forbidden, discord.HTTPException):
+            pass
+    timeout_minutes = max(1, min(43200, int(module.get("verificationTimeoutMinutes") or 1440)))
+    action = str(module.get("failureAction") or "kick").lower()
+    if action not in {"ban", "kick", "mute", "none"}:
+        action = "kick"
+    await pending.set(f"{member.guild.id}:{member.id}", {
+        "guildId": str(member.guild.id), "memberId": str(member.id),
+        "deadlineAt": int(time.time()) + timeout_minutes * 60,
+        "failureAction": action,
+        "durationMinutes": max(1, min(40320, int(module.get("failureDurationMinutes") or 60))),
+        "reason": "Failed to complete Cedar Cove verification before the deadline."
+    })
+
+
+async def _verification_enforcement_loop(bot):
+    await bot.wait_until_ready()
+    pending = getattr(bot, "verification_pending_store", None)
+    while not bot.is_closed():
+        try:
+            records = await pending.get_all() if pending else {}
+            for key, record in records.items():
+                if not isinstance(record, dict):
+                    continue
+                try:
+                    guild_id = int(record.get("guildId") or str(key).split(":")[0])
+                    member_id = int(record.get("memberId") or str(key).split(":")[1])
+                except (ValueError, IndexError, TypeError):
+                    continue
+                guild = bot.get_guild(guild_id)
+                if guild is None:
+                    continue
+                module = await _dashboard_module(bot, guild_id, "verification")
+                verified_id = str(module.get("verifiedRoleId") or "")
+                verified_role = guild.get_role(int(verified_id)) if verified_id.isdigit() else None
+                member = guild.get_member(member_id)
+                if member is None or (verified_role and verified_role in member.roles):
+                    await pending.delete(key)
+                    continue
+                if int(record.get("deadlineAt") or 0) > int(time.time()):
+                    continue
+                action = str(record.get("failureAction") or "kick").lower()
+                reason = str(record.get("reason") or "Failed verification")[:500]
+                try:
+                    if action == "ban":
+                        await guild.ban(member, reason=reason, delete_message_seconds=0)
+                    elif action == "kick":
+                        await member.kick(reason=reason)
+                    elif action == "mute":
+                        minutes = max(1, min(40320, int(record.get("durationMinutes") or 60)))
+                        await member.timeout(datetime.now(timezone.utc) + timedelta(minutes=minutes), reason=reason)
+                except (discord.Forbidden, discord.HTTPException) as exc:
+                    logger.warning("Verification failure action failed guild=%s member=%s action=%s: %s", guild_id, member_id, action, exc)
+                await pending.delete(key)
+        except Exception:
+            logger.exception("Verification enforcement loop failed")
+        await asyncio.sleep(60)
+
+
 async def _verification_refresh_loop(bot):
     await bot.wait_until_ready()
     while not bot.is_closed():
         for guild in list(bot.guilds):
             try:
-                module = await _dashboard_module(bot, guild.id, 'verification')
-                if not module.get('enabled') or not module.get('refresh'): continue
-                channel_id = str(module.get('channelId') or '')
+                module = await _dashboard_module(bot, guild.id, "verification")
+                if not module.get("enabled") or not module.get("refresh"):
+                    continue
+                channel_id = str(module.get("channelId") or "")
                 channel = guild.get_channel(int(channel_id)) if channel_id.isdigit() else None
-                if not isinstance(channel, discord.TextChannel): continue
-                content = str(module.get('message') or 'Read the rules and complete verification to access Cedar Cove.')[:1800]
-                message_id = str(module.get('messageId') or '')
+                if not isinstance(channel, discord.TextChannel):
+                    continue
+                content = str(module.get("message") or "Read the rules and complete verification to access Cedar Cove.")[:1800]
+                embed = discord.Embed(title="Cedar Cove Verification", description=content, color=discord.Color.blurple())
+                view_cls = getattr(bot, "verification_view_cls", None)
+                view = view_cls() if view_cls else None
+                message_id = str(module.get("messageId") or "")
                 try:
-                    if message_id.isdigit():
-                        old = await channel.fetch_message(int(message_id))
-                        if old.author.id == bot.user.id:
-                            if old.content != content: await old.edit(content=content, allowed_mentions=discord.AllowedMentions.none())
-                            continue
-                    sent = await channel.send(content, allowed_mentions=discord.AllowedMentions.none())
-                    module['messageId'] = str(sent.id)
-                    store = getattr(bot, 'staff_dashboard_store', None)
-                    if store is not None:
-                        config = await store.get(str(guild.id), {})
-                        config.setdefault('modules', {})['verification'] = module
-                        await store.set(str(guild.id), config)
-                except (discord.Forbidden, discord.NotFound, discord.HTTPException): pass
+                    old = await channel.fetch_message(int(message_id)) if message_id.isdigit() else None
+                    if old and old.author.id == bot.user.id:
+                        await old.edit(embed=embed, view=view, content=None, allowed_mentions=discord.AllowedMentions.none())
+                    else:
+                        sent = await channel.send(embed=embed, view=view, allowed_mentions=discord.AllowedMentions.none())
+                        module["messageId"] = str(sent.id)
+                        config = await bot.staff_dashboard_store.get(str(guild.id), {})
+                        config.setdefault("modules", {})["verification"] = module
+                        await bot.staff_dashboard_store.set(str(guild.id), config)
+                except (discord.Forbidden, discord.NotFound, discord.HTTPException):
+                    pass
             except Exception as exc:
-                log = getattr(bot, 'staff_dashboard_logger', None)
-                if log: log.warning('Verification refresh failed for guild %s: %s', guild.id, exc)
+                log = getattr(bot, "staff_dashboard_logger", None)
+                if log:
+                    log.warning("Verification refresh failed for guild %s: %s", guild.id, exc)
         await asyncio.sleep(300)
+
+
+async def send_verification_message(request):
+    user, error = await _authorized(request)
+    if error:
+        return error
+    try:
+        body = await request.json()
+    except Exception:
+        return _json(request, {"error": "Invalid JSON body."}, 400)
+    gid = str(body.get("guildId") or "")
+    guild = request.app["staff_bot"].get_guild(int(gid)) if gid.isdigit() else None
+    if guild is None:
+        return _json(request, {"error": "Choose a server the bot is in."}, 404)
+    config = await request.app["staff_store"].get(gid, {})
+    module = ((config.get("modules") or {}).get("verification") or {})
+    channel_id = str(body.get("channelId") or module.get("channelId") or "")
+    channel = guild.get_channel(int(channel_id)) if channel_id.isdigit() else None
+    if not isinstance(channel, discord.TextChannel):
+        return _json(request, {"error": "Choose a valid verification text channel."}, 400)
+    verified_id = str(module.get("verifiedRoleId") or "")
+    unverified_id = str(module.get("unverifiedRoleId") or "")
+    verified_role = guild.get_role(int(verified_id)) if verified_id.isdigit() else None
+    unverified_role = guild.get_role(int(unverified_id)) if unverified_id.isdigit() else None
+    if verified_role is None:
+        return _json(request, {"error": "Choose a valid Verified Role and save settings first."}, 400)
+    if unverified_id and unverified_role is None:
+        return _json(request, {"error": "The selected Unverified Role no longer exists."}, 400)
+    if verified_role == unverified_role:
+        return _json(request, {"error": "Verified and Unverified roles must be different."}, 400)
+    content = str(module.get("message") or "Welcome to Cedar Cove! Click Verify below after reading the instructions.")[:1800]
+    embed = discord.Embed(title="Cedar Cove Verification", description=content, color=discord.Color.blurple())
+    embed.set_footer(text="Cedar Cove • Complete verification to unlock the server")
+    view_cls = getattr(request.app["staff_bot"], "verification_view_cls", None)
+    view = view_cls() if view_cls else None
+    merge = bool(body.get("merge"))
+    message_id = str(module.get("messageId") or "")
+    try:
+        old = await channel.fetch_message(int(message_id)) if merge and message_id.isdigit() else None
+        if old and old.author.id == request.app["staff_bot"].user.id:
+            await old.edit(content=None, embed=embed, view=view, allowed_mentions=discord.AllowedMentions.none())
+            sent = old
+            result_action = "updated"
+        else:
+            sent = await channel.send(embed=embed, view=view, allowed_mentions=discord.AllowedMentions.none())
+            result_action = "sent"
+        module["channelId"] = str(channel.id)
+        module["messageId"] = str(sent.id)
+        config.setdefault("modules", {})["verification"] = module
+        await request.app["staff_store"].set(gid, config)
+        await _audit(request, gid, user, "verification_message", f"Verification message {result_action} in #{channel.name}")
+        return _json(request, {"ok": True, "action": result_action, "channelName": channel.name, "messageId": str(sent.id)})
+    except discord.Forbidden:
+        return _json(request, {"error": "The bot needs Send Messages and Embed Links in the verification channel."}, 403)
+    except discord.HTTPException as exc:
+        return _json(request, {"error": f"Discord could not publish the verification message (HTTP {exc.status})."}, 502)
+
 
 async def get_honeypot_stats(request):
     user, error = await _authorized(request)
@@ -2278,6 +2471,7 @@ def register_staff_routes(app: web.Application):
     app.router.add_put("/api/dashboard/guilds/{guild_id}/settings", save_config)
     app.router.add_post("/api/dashboard/publish-panel", publish_panel)
     app.router.add_post("/api/dashboard/send-message", send_module_message)
+    app.router.add_post("/api/dashboard/verification/send", send_verification_message)
     app.router.add_get("/api/dashboard/guilds/{guild_id}/audit", list_audit)
     app.router.add_get("/api/dashboard/guilds/{guild_id}/honeypot-stats", get_honeypot_stats)
     app.router.add_get("/api/dashboard/guilds/{guild_id}/role-nicknames", get_role_nicknames)
