@@ -1015,7 +1015,12 @@ async def _verification_refresh_loop(bot):
                 view = view_cls() if view_cls else None
                 message_id = str(module.get("messageId") or "")
                 try:
-                    old = await channel.fetch_message(int(message_id)) if message_id.isdigit() else None
+                    old = None
+                    if message_id.isdigit():
+                        try:
+                            old = await channel.fetch_message(int(message_id))
+                        except discord.NotFound:
+                            old = None
                     if old and old.author.id == bot.user.id:
                         await old.edit(embed=embed, view=view, content=None, allowed_mentions=discord.AllowedMentions.none())
                     else:
@@ -1024,7 +1029,7 @@ async def _verification_refresh_loop(bot):
                         config = await bot.staff_dashboard_store.get(str(guild.id), {})
                         config.setdefault("modules", {})["verification"] = module
                         await bot.staff_dashboard_store.set(str(guild.id), config)
-                except (discord.Forbidden, discord.NotFound, discord.HTTPException):
+                except (discord.Forbidden, discord.HTTPException):
                     pass
             except Exception as exc:
                 log = getattr(bot, "staff_dashboard_logger", None)
@@ -1071,7 +1076,12 @@ async def send_verification_message(request):
     merge = bool(body.get("merge"))
     message_id = str(module.get("messageId") or "")
     try:
-        old = await channel.fetch_message(int(message_id)) if merge and message_id.isdigit() else None
+        old = None
+        if merge and message_id.isdigit():
+            try:
+                old = await channel.fetch_message(int(message_id))
+            except discord.NotFound:
+                old = None
         if old and old.author.id == request.app["staff_bot"].user.id:
             await old.edit(content=None, embed=embed, view=view, allowed_mentions=discord.AllowedMentions.none())
             sent = old
