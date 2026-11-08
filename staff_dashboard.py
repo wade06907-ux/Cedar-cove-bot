@@ -219,7 +219,7 @@ def setup_staff(bot, get_store, logger):
 
         @bot.tree.command(name="staff-loa", description="Place a staff member on leave of absence.")
         @discord.app_commands.describe(user="Staff member", days="Length of leave in days")
-        async def staff_loa_command(interaction: discord.Interaction, user: discord.Member, days: app_commands.Range[int, 1, 90] = 7):
+        async def staff_loa_command(interaction: discord.Interaction, user: discord.Member, days: discord.app_commands.Range[int, 1, 90] = 7):
             if not _command_can_manage(interaction):
                 return await interaction.response.send_message("You do not have permission to manage staff leave.", ephemeral=True)
             _, _, role_ids = await _command_staff_config(interaction.guild)
@@ -240,6 +240,8 @@ def setup_staff(bot, get_store, logger):
 
         @bot.tree.command(name="loa-status", description="Check a staff member's leave of absence status.")
         async def loa_status_command(interaction: discord.Interaction, user: discord.Member):
+            if not _command_can_manage(interaction):
+                return await interaction.response.send_message("You do not have permission to view staff leave status.", ephemeral=True)
             _, _, role_ids = await _command_staff_config(interaction.guild)
             if not _command_is_staff(user, role_ids):
                 return await interaction.response.send_message("Choose a current staff member.", ephemeral=True)
@@ -274,7 +276,7 @@ def setup_staff(bot, get_store, logger):
 
         @bot.tree.command(name="warn", description="Warn a non-staff server member.")
         @discord.app_commands.describe(user="Non-staff member to warn", reason="Reason for the warning")
-        async def warn_member_command(interaction: discord.Interaction, user: discord.Member, reason: str):
+        async def warn_member_command(interaction: discord.Interaction, user: discord.Member, reason: str = "No reason provided"):
             if not interaction.guild or not interaction.user.guild_permissions.moderate_members:
                 return await interaction.response.send_message("You need Moderate Members permission.", ephemeral=True)
             _, _, role_ids = await _command_staff_config(interaction.guild)
@@ -291,7 +293,7 @@ def setup_staff(bot, get_store, logger):
 
         @bot.tree.command(name="mute", description="Timeout a staff member.")
         @discord.app_commands.describe(user="Staff member to mute", minutes="Timeout length in minutes", reason="Reason for the mute")
-        async def mute_staff_command(interaction: discord.Interaction, user: discord.Member, minutes: app_commands.Range[int, 1, 40320] = 60, reason: str = "No reason provided"):
+        async def mute_staff_command(interaction: discord.Interaction, user: discord.Member, minutes: discord.app_commands.Range[int, 1, 40320] = 60, reason: str = "No reason provided"):
             if not interaction.guild or not interaction.user.guild_permissions.moderate_members:
                 return await interaction.response.send_message("You need Moderate Members permission.", ephemeral=True)
             _, _, role_ids = await _command_staff_config(interaction.guild)
@@ -307,7 +309,7 @@ def setup_staff(bot, get_store, logger):
 
         @bot.tree.command(name="unmute", description="Remove a timeout from a staff member.")
         @discord.app_commands.describe(user="Staff member to unmute", reason="Reason for removing the mute")
-        async def unmute_staff_command(interaction: discord.Interaction, user: discord.Member, reason: str):
+        async def unmute_staff_command(interaction: discord.Interaction, user: discord.Member, reason: str = "No reason provided"):
             if not interaction.guild or not interaction.user.guild_permissions.moderate_members:
                 return await interaction.response.send_message("You need Moderate Members permission.", ephemeral=True)
             _, _, role_ids = await _command_staff_config(interaction.guild)
