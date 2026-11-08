@@ -13,7 +13,7 @@ import html
 import io
 import re
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import secrets
 from typing import Any
 from urllib.parse import urlparse
@@ -84,6 +84,240 @@ def setup_staff(bot, get_store, logger):
         @discord.app_commands.describe(member="Staff member", reason="Reason for the demotion")
         async def demote_staff(interaction: discord.Interaction, member: discord.Member, reason: str = "No reason provided"):
             await _staff_rank_command(interaction, member, "demote", reason[:500])
+
+
+        async def _command_staff_config(guild):
+            config = await bot.staff_dashboard_store.get(str(guild.id), {})
+            ladder = (((config.get("modules") or {}).get("staff_ladder") or {}).get("items") or [])
+            role_ids = [item.get("roleId") for item in ladder if isinstance(item, dict) and item.get("roleId")]
+            return config, ladder, role_ids
+
+        def _command_is_staff(member, role_ids):
+            return bool(_member_staff_roles(member, role_ids))
+
+        def _command_can_manage(interaction):
+            if not interaction.guild or not isinstance(interaction.user, discord.Member):
+                return False
+            if interaction.guild.owner_id == interaction.user.id:
+                return True
+            if interaction.user.guild_permissions.administrator or interaction.user.guild_permissions.manage_roles:
+                return True
+            allowed = {"owner", "co owner", "coowner", "admin", "administrator"}
+            return any(re.sub(r"[^a-z0-9]+", " ", role.name.casefold()).strip() in allowed for role in interaction.user.roles)
+
+        async def _command_suspend_staff(guild, member, record, actor_name, reason):
+            normalize = lambda value: re.sub(r"[^a-z0-9]+", " ", value.casefold()).strip()
+            config, ladder, role_ids = await _command_staff_config(guild)
+            staff_roles = [role for role in member.roles if normalize(role.name) in {"owner", "co owner", "coowner", "admin", "administrator", "mod", "moderator", "trial staff", "helper", "socials manager", "staff"} or str(role.id) in {str(x) for x in role_ids}]
+            member_role = next((role for role in guild.roles if normalize(role.name) in {"member", "members", "server member", "server members"}), None)
+            if not staff_roles or member_role is None:
+                return False, "Could not find the staff roles or the server's Member role."
+            if not guild.me or not guild.me.guild_permissions.manage_roles:
+                return False, "The bot needs Manage Roles permission."
+            if member_role >= guild.me.top_role or any(role >= guild.me.top_role for role in staff_roles):
+                return False, "Move the bot's highest role above the Member and staff roles."
+            removed_ids = [str(role.id) for role in staff_roles]
+            try:
+                await member.remove_roles(*staff_roles, reason=f"Staff suspended by {actor_name}: {reason or 'Three strikes'}")
+                added_member = member_role not in member.roles
+                if added_member:
+                    await member.add_roles(member_role, reason=f"Staff suspended by {actor_name}")
+            except (discord.Forbidden, discord.HTTPException):
+                return False, "Discord could not apply the suspension. Check role permissions and hierarchy."
+            record["suspended"] = True
+            record["suspensionAddedMemberRole"] = added_member
+            record["suspension"] = {"reason": reason or "Automatically suspended after three strikes", "by": {"username": actor_name}, "at": int(time.time()), "removedRoleIds": removed_ids, "memberRoleId": str(member_role.id), "pendingInvestigation": True}
+            return True, "Suspended pending investigation."
+
+        @bot.tree.command(name="staff-action", description="Promote, demote, warn, strike, or suspend a staff member.")
+        @discord.app_commands.choices(action=[
+            discord.app_commands.Choice(name="Promote", value="promote"),
+            discord.app_commands.Choice(name="Demote", value="demote"),
+            discord.app_commands.Choice(name="Warn", value="warn"),
+            discord.app_commands.Choice(name="Strike", value="strike"),
+            discord.app_commands.Choice(name="Suspend", value="suspend"),
+        ])
+        async def staff_action_command(interaction: discord.Interaction, action: discord.app_commands.Choice[str], user: discord.Member):
+            if not _command_can_manage(interaction):
+                return await interaction.response.send_message("Only the server Owner, Co-Owner, Admin, or a member with Manage Roles can use this command.", ephemeral=True)
+            if user.bot or user.id == interaction.user.id:
+                return await interaction.response.send_message("Choose another human staff member.", ephemeral=True)
+            config, ladder, role_ids = await _command_staff_config(interaction.guild)
+            if not _command_is_staff(user, role_ids):
+                return await interaction.response.send_message("That member is not on the configured staff team.", ephemeral=True)
+            store = getattr(bot, "staff_management_store", None)
+            if store is None:
+                return await interaction.response.send_message("Staff records are unavailable right now.", ephemeral=True)
+            records = await store.get(str(interaction.guild.id), {})
+            if not isinstance(records, dict):
+                records = {}
+            record = records.setdefault(str(user.id), {"warnings": [], "strikes": [], "loa": None, "suspended": False})
+            actor_name = interaction.user.display_name
+            now = int(time.time())
+            selected = action.value
+            if selected in {"promote", "demote"}:
+                ladder_roles = []
+                for item in ladder:
+                    role = interaction.guild.get_role(int(item.get("roleId", 0))) if isinstance(item, dict) and str(item.get("roleId", "")).isdigit() else None
+                    if role:
+                        ladder_roles.append((item, role))
+                current = [i for i, (_, role) in enumerate(ladder_roles) if role in user.roles]
+                if not ladder_roles:
+                    return await interaction.response.send_message("Set up the staff ladder in the dashboard first.", ephemeral=True)
+                current_index = max(current) if current else -1
+                target_index = current_index - 1 if selected == "promote" else current_index + 1
+                if selected == "demote" and current_index < 0:
+                    return await interaction.response.send_message("That staff member has no staff ladder rank.", ephemeral=True)
+                if target_index < 0 or target_index >= len(ladder_roles):
+                    return await interaction.response.send_message("That staff member is already at the end of the staff ladder.", ephemeral=True)
+                target_item, target_role = ladder_roles[target_index]
+                if not interaction.guild.me.guild_permissions.manage_roles or target_role >= interaction.guild.me.top_role:
+                    return await interaction.response.send_message("The bot needs Manage Roles and a higher role than the staff ladder roles.", ephemeral=True)
+                old_rank = ladder_roles[current_index][0].get("name", ladder_roles[current_index][1].name) if current_index >= 0 else "Not ranked"
+                try:
+                    remove = [role for _, role in ladder_roles if role in user.roles and role != target_role]
+                    if remove:
+                        await user.remove_roles(*remove, reason=f"Staff {selected} by {actor_name}")
+                    if target_role not in user.roles:
+                        await user.add_roles(target_role, reason=f"Staff {selected} by {actor_name}")
+                except (discord.Forbidden, discord.HTTPException):
+                    return await interaction.response.send_message("Discord could not update the staff roles. Check the bot's role hierarchy.", ephemeral=True)
+                new_rank = target_item.get("name", target_role.name)
+                record.setdefault("history", []).append({"action": selected, "by": {"username": actor_name}, "at": now, "rank": new_rank})
+                await _update_staff_ladder_post(interaction.guild, f"{user.display_name} was {selected}: {old_rank} -> {new_rank}")
+            elif selected in {"warn", "strike"}:
+                key = "warnings" if selected == "warn" else "strikes"
+                record.setdefault(key, []).append({"by": {"username": actor_name}, "at": now, "reason": "Staff action"})
+                auto_strike = False
+                if selected == "warn" and len(record["warnings"]) % 3 == 0:
+                    record.setdefault("strikes", []).append({"by": {"username": actor_name}, "at": now, "reason": "Automatic strike after three warnings"})
+                    auto_strike = True
+                auto_suspended = False
+                if len(record.get("strikes", [])) >= 3 and not record.get("suspended"):
+                    ok, result_message = await _command_suspend_staff(interaction.guild, user, record, actor_name, "Automatically suspended after three strikes; pending investigation")
+                    auto_suspended = ok
+                    if not ok:
+                        await store.set(str(interaction.guild.id), records)
+                        return await interaction.response.send_message(f"Strike recorded, but automatic suspension could not be applied: {result_message}", ephemeral=True)
+                record.setdefault("history", []).append({"action": selected, "by": {"username": actor_name}, "at": now})
+                await store.set(str(interaction.guild.id), records)
+                summary = f"{user.display_name} received a {selected}. Warnings: {len(record.get('warnings', []))}; strikes: {len(record.get('strikes', []))}."
+                if auto_strike:
+                    summary += " Three warnings reached: one automatic strike was added."
+                if auto_suspended:
+                    summary += " Three strikes reached: the staff member is suspended pending investigation."
+                return await interaction.response.send_message(summary, ephemeral=True)
+            elif selected == "suspend":
+                if record.get("suspended"):
+                    return await interaction.response.send_message("That staff member is already suspended.", ephemeral=True)
+                ok, result_message = await _command_suspend_staff(interaction.guild, user, record, actor_name, "Manual staff suspension pending investigation")
+                if not ok:
+                    return await interaction.response.send_message(result_message, ephemeral=True)
+                record.setdefault("history", []).append({"action": "suspend", "by": {"username": actor_name}, "at": now})
+            await store.set(str(interaction.guild.id), records)
+            await interaction.response.send_message(f"{user.display_name}: {selected} completed.", ephemeral=True)
+
+        @bot.tree.command(name="staff-loa", description="Place a staff member on leave of absence.")
+        @discord.app_commands.describe(user="Staff member", days="Length of leave in days")
+        async def staff_loa_command(interaction: discord.Interaction, user: discord.Member, days: app_commands.Range[int, 1, 90] = 7):
+            if not _command_can_manage(interaction):
+                return await interaction.response.send_message("You do not have permission to manage staff leave.", ephemeral=True)
+            _, _, role_ids = await _command_staff_config(interaction.guild)
+            if user.bot or not _command_is_staff(user, role_ids):
+                return await interaction.response.send_message("Choose a current staff member.", ephemeral=True)
+            store = getattr(bot, "staff_management_store", None)
+            records = await store.get(str(interaction.guild.id), {}) if store else {}
+            if not isinstance(records, dict):
+                records = {}
+            record = records.setdefault(str(user.id), {"warnings": [], "strikes": [], "loa": None, "suspended": False})
+            now = int(time.time())
+            end_at = now + int(days) * 86400
+            old = record.get("loa") if isinstance(record.get("loa"), dict) else {}
+            record["loa"] = {"active": True, "startAt": now, "endAt": end_at, "by": {"username": interaction.user.display_name}, "history": old.get("history", [])}
+            record["loa"]["history"].append({"action": "started", "by": {"username": interaction.user.display_name}, "at": now, "endAt": end_at})
+            await store.set(str(interaction.guild.id), records)
+            await interaction.response.send_message(f"{user.display_name} is now on LOA for {days} day(s).", ephemeral=True)
+
+        @bot.tree.command(name="loa-status", description="Check a staff member's leave of absence status.")
+        async def loa_status_command(interaction: discord.Interaction, user: discord.Member):
+            _, _, role_ids = await _command_staff_config(interaction.guild)
+            if not _command_is_staff(user, role_ids):
+                return await interaction.response.send_message("Choose a current staff member.", ephemeral=True)
+            store = getattr(bot, "staff_management_store", None)
+            records = await store.get(str(interaction.guild.id), {}) if store else {}
+            record = records.get(str(user.id), {}) if isinstance(records, dict) else {}
+            loa = record.get("loa") if isinstance(record.get("loa"), dict) else {}
+            state = _loa_state(record)
+            if state == "none":
+                message = f"{user.display_name} is not currently on LOA."
+            elif state == "expired":
+                message = f"{user.display_name}'s LOA has expired."
+            else:
+                remaining = max(0, int(loa.get("endAt", 0)) - int(time.time()))
+                message = f"{user.display_name} is on LOA. Time remaining: {remaining // 86400} day(s), {(remaining % 86400) // 3600} hour(s)."
+            await interaction.response.send_message(message, ephemeral=True)
+
+        @bot.tree.command(name="ban", description="Ban a member from this server.")
+        @discord.app_commands.describe(user="Member to ban", reason="Reason for the ban")
+        async def ban_member_command(interaction: discord.Interaction, user: discord.Member, reason: str = "No reason provided"):
+            if not interaction.guild or not interaction.user.guild_permissions.ban_members:
+                return await interaction.response.send_message("You need Ban Members permission.", ephemeral=True)
+            if user.id == interaction.user.id or user.id == interaction.guild.owner_id:
+                return await interaction.response.send_message("You cannot ban yourself or the server owner.", ephemeral=True)
+            if interaction.guild.me.top_role <= user.top_role:
+                return await interaction.response.send_message("The bot's highest role must be above the target member.", ephemeral=True)
+            try:
+                await user.ban(reason=reason[:500], delete_message_seconds=0)
+            except (discord.Forbidden, discord.HTTPException):
+                return await interaction.response.send_message("Discord could not ban that member. Check permissions and role hierarchy.", ephemeral=True)
+            await interaction.response.send_message(f"{user.display_name} was banned. Reason: {reason[:500]}", ephemeral=True)
+
+        @bot.tree.command(name="warn", description="Warn a non-staff server member.")
+        @discord.app_commands.describe(user="Non-staff member to warn", reason="Reason for the warning")
+        async def warn_member_command(interaction: discord.Interaction, user: discord.Member, reason: str):
+            if not interaction.guild or not interaction.user.guild_permissions.moderate_members:
+                return await interaction.response.send_message("You need Moderate Members permission.", ephemeral=True)
+            _, _, role_ids = await _command_staff_config(interaction.guild)
+            if user.bot or _command_is_staff(user, role_ids):
+                return await interaction.response.send_message("This command is for non-staff members only. Use /staff-action for staff.", ephemeral=True)
+            store = getattr(bot, "member_moderation_store", None)
+            records = await store.get(str(interaction.guild.id), {}) if store else {}
+            if not isinstance(records, dict):
+                records = {}
+            record = records.setdefault(str(user.id), {"warnings": []})
+            record.setdefault("warnings", []).append({"reason": reason[:500], "by": interaction.user.display_name, "at": int(time.time())})
+            await store.set(str(interaction.guild.id), records)
+            await interaction.response.send_message(f"{user.display_name} was warned. Reason: {reason[:500]}", ephemeral=True)
+
+        @bot.tree.command(name="mute", description="Timeout a staff member.")
+        @discord.app_commands.describe(user="Staff member to mute", minutes="Timeout length in minutes", reason="Reason for the mute")
+        async def mute_staff_command(interaction: discord.Interaction, user: discord.Member, minutes: app_commands.Range[int, 1, 40320] = 60, reason: str = "No reason provided"):
+            if not interaction.guild or not interaction.user.guild_permissions.moderate_members:
+                return await interaction.response.send_message("You need Moderate Members permission.", ephemeral=True)
+            _, _, role_ids = await _command_staff_config(interaction.guild)
+            if user.bot or not _command_is_staff(user, role_ids):
+                return await interaction.response.send_message("This command is for staff members only.", ephemeral=True)
+            if interaction.guild.me.top_role <= user.top_role:
+                return await interaction.response.send_message("The bot's highest role must be above the target staff member.", ephemeral=True)
+            try:
+                await user.timeout(datetime.now(timezone.utc) + timedelta(minutes=int(minutes)), reason=reason[:500])
+            except (discord.Forbidden, discord.HTTPException):
+                return await interaction.response.send_message("Discord could not mute that staff member. Check permissions and role hierarchy.", ephemeral=True)
+            await interaction.response.send_message(f"{user.display_name} was muted for {minutes} minute(s). Reason: {reason[:500]}", ephemeral=True)
+
+        @bot.tree.command(name="unmute", description="Remove a timeout from a staff member.")
+        @discord.app_commands.describe(user="Staff member to unmute", reason="Reason for removing the mute")
+        async def unmute_staff_command(interaction: discord.Interaction, user: discord.Member, reason: str):
+            if not interaction.guild or not interaction.user.guild_permissions.moderate_members:
+                return await interaction.response.send_message("You need Moderate Members permission.", ephemeral=True)
+            _, _, role_ids = await _command_staff_config(interaction.guild)
+            if user.bot or not _command_is_staff(user, role_ids):
+                return await interaction.response.send_message("This command is for staff members only.", ephemeral=True)
+            try:
+                await user.timeout(None, reason=reason[:500])
+            except (discord.Forbidden, discord.HTTPException):
+                return await interaction.response.send_message("Discord could not remove that timeout.", ephemeral=True)
+            await interaction.response.send_message(f"{user.display_name} was unmuted. Reason: {reason[:500]}", ephemeral=True)
 
         bot._staff_rank_commands_registered = True
 
@@ -2056,3 +2290,4 @@ def setup_staff(bot, get_store, logger):
     _original_setup_staff(bot, get_store, logger)
     bot.staff_dashboard_store_for_panels = get_store("panels")
     bot.staff_management_store = get_store("staff_management_records")
+    bot.member_moderation_store = get_store("member_moderation_records")
