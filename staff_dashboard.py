@@ -1102,6 +1102,37 @@ async def send_module_message(request):
         return _json(request, {"error": f"Discord could not send the message (HTTP {exc.status})."}, 502)
 
 
+def _format_message_placeholders(template, member=None, actor=None, guild=None, reason="", action="", old_rank="", new_rank="", member_count=None):
+    member_name = getattr(member, "display_name", None) or getattr(member, "name", None) or ""
+    member_username = getattr(member, "name", None) or member_name
+    member_mention = getattr(member, "mention", None) or member_name
+    actor_name = actor.get("username", "Staff") if isinstance(actor, dict) else (getattr(actor, "display_name", None) or getattr(actor, "name", None) or "Staff")
+    actor_mention = getattr(actor, "mention", None) or actor_name
+    server_name = getattr(guild or getattr(member, "guild", None), "name", "")
+    values = {
+        "{user}": str(member_name),
+        "{username}": str(member_name),
+        "{display_name}": str(member_name),
+        "{member}": str(member_name),
+        "{mention}": str(member_mention),
+        "{user_mention}": str(member_mention),
+        "{member_mention}": str(member_mention),
+        "{actor}": str(actor_name),
+        "{actor_username}": str(actor_name),
+        "{actor_mention}": str(actor_mention),
+        "{server}": str(server_name),
+        "{reason}": str(reason or "No reason provided"),
+        "{action}": str(action or ""),
+        "{old_rank}": str(old_rank or ""),
+        "{new_rank}": str(new_rank or ""),
+    }
+    if member_count is not None:
+        values["{member_count}"] = str(member_count)
+    for token, value in values.items():
+        template = template.replace(token, value)
+    return template
+
+
 def _profile_display_name(member):
     return (getattr(member, "global_name", None) or member.name).strip()
 
@@ -1148,7 +1179,7 @@ async def _welcome_leave_member_join(member):
     if not isinstance(channel, discord.TextChannel):
         return
     template = str(module.get("message") or "Welcome {user} to {server}!").strip()[:1800]
-    message = template.replace("{user}", member.mention).replace("{username}", member.name).replace("{server}", member.guild.name).replace("{member_count}", str(member.guild.member_count or len(member.guild.members)))
+    message = _format_message_placeholders(template, member=member, guild=member.guild, member_count=member.guild.member_count or len(member.guild.members))
     try:
         await channel.send(message, allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False))
     except (discord.Forbidden, discord.HTTPException):
@@ -1171,7 +1202,7 @@ async def _welcome_leave_member_remove(member):
     if not isinstance(channel, discord.TextChannel):
         return
     template = str(module.get("message") or "{username} has left {server}.").strip()[:1800]
-    message = template.replace("{user}", member.mention).replace("{username}", member.name).replace("{server}", member.guild.name).replace("{member_count}", str(max(0, (member.guild.member_count or len(member.guild.members)) - 1)))
+    message = _format_message_placeholders(template, member=member, guild=member.guild, member_count=max(0, (member.guild.member_count or len(member.guild.members)) - 1))
     try:
         await channel.send(message, allowed_mentions=discord.AllowedMentions.none())
     except (discord.Forbidden, discord.HTTPException):
@@ -1698,9 +1729,7 @@ async def _send_staff_announcement(guild, channel_id, template, member, actor, r
     channel = guild.get_channel(int(channel_id)) if str(channel_id).isdigit() else None
     if not isinstance(channel, discord.TextChannel) or not template:
         return
-    message = template.replace("{member}", member.mention).replace("{username}", member.display_name)
-    message = message.replace("{actor}", str(actor.get("username") or "Staff")).replace("{reason}", reason or "No reason provided")
-    message = message.replace("{action}", action).replace("{old_rank}", old_rank).replace("{new_rank}", new_rank)
+    message = _format_message_placeholders(template, member=member, actor=actor, guild=guild, reason=reason, action=action, old_rank=old_rank, new_rank=new_rank)
     try:
         await channel.send(message[:2000], allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False))
     except (discord.Forbidden, discord.HTTPException):
