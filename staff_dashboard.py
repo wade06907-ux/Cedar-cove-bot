@@ -929,7 +929,7 @@ async def _verification_member_join(member):
     unverified_id = str(module.get("unverifiedRoleId") or "")
     verified_role = member.guild.get_role(int(verified_id)) if verified_id.isdigit() else None
     unverified_role = member.guild.get_role(int(unverified_id)) if unverified_id.isdigit() else None
-    if verified_role is None:
+    if verified_role is None or unverified_role is None or verified_role == unverified_role:
         return
     if verified_role in member.roles:
         return
