@@ -380,6 +380,9 @@ def setup_staff(bot, get_store, logger):
     if not getattr(bot, "_verification_member_join_listener_added", False):
         bot.add_listener(_verification_member_join, "on_member_join")
         bot._verification_member_join_listener_added = True
+    if not getattr(bot, "_verification_text_listener_added", False):
+        bot.add_listener(_verification_text_message, "on_message")
+        bot._verification_text_listener_added = True
     if not getattr(bot, "_welcome_leave_listeners_added", False):
         bot.add_listener(_welcome_leave_member_join, "on_member_join")
         bot.add_listener(_welcome_leave_member_remove, "on_member_remove")
@@ -915,6 +918,53 @@ async def _dashboard_log_member_update(before, after):
         if any(r.id in role_ids for r in set(after.roles) - set(before.roles)) or any(r.id in role_ids for r in set(before.roles) - set(after.roles)):
             await _update_staff_ladder_post(after.guild, "Staff ladder updated")
 
+async def _verification_text_message(message):
+    if message.guild is None or message.author.bot or not isinstance(message.author, discord.Member):
+        return
+    bot = message.guild._state._get_client()
+    store = getattr(bot, "staff_dashboard_store", None)
+    pending = getattr(bot, "verification_pending_store", None)
+    if store is None or pending is None:
+        return
+    config = await store.get(str(message.guild.id), {})
+    module = ((config.get("modules") or {}).get("verification") or {})
+    if not module.get("enabled") or str(message.channel.id) != str(module.get("channelId") or ""):
+        return
+    expected = str(module.get("requiredText") or "").strip()
+    if not expected:
+        return
+    member = message.author
+    verified_id = str(module.get("verifiedRoleId") or "")
+    unverified_id = str(module.get("unverifiedRoleId") or "")
+    verified_role = message.guild.get_role(int(verified_id)) if verified_id.isdigit() else None
+    unverified_role = message.guild.get_role(int(unverified_id)) if unverified_id.isdigit() else None
+    if verified_role is None or verified_role in member.roles:
+        return
+    if unverified_role is not None and unverified_role not in member.roles:
+        return
+    key = f"{message.guild.id}:{member.id}"
+    record = await pending.get(key)
+    if not record:
+        return
+    if message.content.strip().casefold() == expected.casefold():
+        try:
+            await member.add_roles(verified_role, reason="Completed Cedar Cove text verification")
+            if unverified_role is not None and unverified_role in member.roles:
+                await member.remove_roles(unverified_role, reason="Completed Cedar Cove text verification")
+            await pending.delete(key)
+            await message.delete()
+        except (discord.Forbidden, discord.HTTPException) as exc:
+            getattr(bot, "staff_dashboard_logger", __import__("logging").getLogger("mega_bot.verification")).warning("Text verification could not finish guild=%s member=%s: %s", message.guild.id, member.id, exc)
+        return
+    async def _delete_incorrect_verification():
+        await asyncio.sleep(20)
+        try:
+            await message.delete()
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            pass
+    asyncio.create_task(_delete_incorrect_verification())
+
+
 async def _verification_member_join(member):
     if member.bot:
         return
@@ -1009,7 +1059,7 @@ async def _verification_refresh_loop(bot):
                 channel = guild.get_channel(int(channel_id)) if channel_id.isdigit() else None
                 if not isinstance(channel, discord.TextChannel):
                     continue
-                content = str(module.get("message") or "Read the rules and complete verification to access Cedar Cove.")[:4000]
+                content = str(module.get("message") or "Read the instructions below, then type the required text in this channel.")[:4000]
                 embed = discord.Embed(title="Cedar Cove Verification", description=content, color=discord.Color.blurple())
                 view_cls = getattr(bot, "verification_view_cls", None)
                 view = view_cls() if view_cls else None
@@ -1070,7 +1120,7 @@ async def send_verification_message(request):
         return _json(request, {"error": "Enable and keep verification settings before publishing."}, 400)
     content = str(module.get("message") or "Welcome to Cedar Cove! Click Verify below after reading the instructions.")[:4000]
     embed = discord.Embed(title="Cedar Cove Verification", description=content, color=discord.Color.blurple())
-    embed.set_footer(text="Cedar Cove • Complete verification to unlock the server")
+    embed.add_field(name="Type this exact text to verify", value=str(module.get("requiredText") or "Not configured — staff must set the required text.")[:1024], inline=False)\n    embed.set_footer(text="Cedar Cove • Type the exact text above to unlock the server")
     view_cls = getattr(request.app["staff_bot"], "verification_view_cls", None)
     view = view_cls() if view_cls else None
     merge = bool(body.get("merge"))
