@@ -368,7 +368,9 @@ def setup_staff(bot, get_store, logger):
     bot.verification_view_cls = VerificationView
     if not getattr(bot, "_verification_view_registered", False):
         async def _register_verification_view():
-            bot.add_view(VerificationView())
+            if not getattr(bot, "_verification_view_added", False):
+                bot.add_view(VerificationView())
+                bot._verification_view_added = True
         bot.add_listener(_register_verification_view, "on_ready")
         bot._verification_view_registered = True
 
@@ -989,7 +991,7 @@ async def _verification_enforcement_loop(bot):
                     getattr(bot, "staff_dashboard_logger", __import__("logging").getLogger("mega_bot.verification")).warning("Verification failure action failed guild=%s member=%s action=%s: %s", guild_id, member_id, action, exc)
                 await pending.delete(key)
         except Exception:
-            logger.exception("Verification enforcement loop failed")
+            getattr(bot, "staff_dashboard_logger", __import__("logging").getLogger("mega_bot.verification")).exception("Verification enforcement loop failed")
         await asyncio.sleep(60)
 
 
@@ -1053,10 +1055,12 @@ async def send_verification_message(request):
     unverified_role = guild.get_role(int(unverified_id)) if unverified_id.isdigit() else None
     if verified_role is None:
         return _json(request, {"error": "Choose a valid Verified Role and save settings first."}, 400)
-    if unverified_id and unverified_role is None:
-        return _json(request, {"error": "The selected Unverified Role no longer exists."}, 400)
+    if unverified_role is None:
+        return _json(request, {"error": "Choose a valid Unverified Role and save settings first."}, 400)
     if verified_role == unverified_role:
         return _json(request, {"error": "Verified and Unverified roles must be different."}, 400)
+    if not module.get("enabled"):
+        return _json(request, {"error": "Enable and keep verification settings before publishing."}, 400)
     content = str(module.get("message") or "Welcome to Cedar Cove! Click Verify below after reading the instructions.")[:1800]
     embed = discord.Embed(title="Cedar Cove Verification", description=content, color=discord.Color.blurple())
     embed.set_footer(text="Cedar Cove • Complete verification to unlock the server")
