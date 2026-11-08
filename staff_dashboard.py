@@ -986,7 +986,7 @@ async def _verification_enforcement_loop(bot):
                         minutes = max(1, min(40320, int(record.get("durationMinutes") or 60)))
                         await member.timeout(datetime.now(timezone.utc) + timedelta(minutes=minutes), reason=reason)
                 except (discord.Forbidden, discord.HTTPException) as exc:
-                    logger.warning("Verification failure action failed guild=%s member=%s action=%s: %s", guild_id, member_id, action, exc)
+                    getattr(bot, "staff_dashboard_logger", __import__("logging").getLogger("mega_bot.verification")).warning("Verification failure action failed guild=%s member=%s action=%s: %s", guild_id, member_id, action, exc)
                 await pending.delete(key)
         except Exception:
             logger.exception("Verification enforcement loop failed")
