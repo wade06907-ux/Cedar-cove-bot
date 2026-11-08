@@ -30,6 +30,8 @@ STAFF_ROLE_NAMES = {"owner": "Owner", "co owner": "Co Owner", "admin": "Admin", 
 def setup_staff(bot, get_store, logger):
     bot.staff_dashboard_store = get_store("staff_dashboard_configs")
     if not getattr(bot, "_staff_rank_commands_registered", False):
+        staff_group = discord.app_commands.Group(name="staff", description="Staff management, discipline, and leave commands")
+        moderation_group = discord.app_commands.Group(name="moderation", description="Server member moderation commands")
         async def _staff_rank_command(interaction, member, action, reason):
             if not interaction.guild or not interaction.user.guild_permissions.manage_roles:
                 return await interaction.response.send_message("You need to run this in a server and have Manage Roles permission.", ephemeral=True)
@@ -75,12 +77,12 @@ def setup_staff(bot, get_store, logger):
             await _update_staff_ladder_post(guild, f"{member.display_name} was {word}: {old_rank} -> {new_rank}")
             await interaction.followup.send(f"{member.mention} was {word} from {old_rank} to {new_rank}.", ephemeral=True)
 
-        @bot.tree.command(name="promote", description="Promote a staff member to the next staff rank.")
+        @staff_group.command(name="promote", description="Promote a staff member to the next staff rank.")
         @discord.app_commands.describe(member="Staff member", reason="Reason for the promotion")
         async def promote_staff(interaction: discord.Interaction, member: discord.Member, reason: str = "No reason provided"):
             await _staff_rank_command(interaction, member, "promote", reason[:500])
 
-        @bot.tree.command(name="demote", description="Demote a staff member to the next lower staff rank.")
+        @staff_group.command(name="demote", description="Demote a staff member to the next lower staff rank.")
         @discord.app_commands.describe(member="Staff member", reason="Reason for the demotion")
         async def demote_staff(interaction: discord.Interaction, member: discord.Member, reason: str = "No reason provided"):
             await _staff_rank_command(interaction, member, "demote", reason[:500])
@@ -129,7 +131,7 @@ def setup_staff(bot, get_store, logger):
             record["suspension"] = {"reason": reason or "Automatically suspended after three strikes", "by": {"username": actor_name}, "at": int(time.time()), "removedRoleIds": removed_ids, "memberRoleId": str(member_role.id), "pendingInvestigation": True}
             return True, "Suspended pending investigation."
 
-        @bot.tree.command(name="staff-action", description="Promote, demote, warn, strike, or suspend a staff member.")
+        @staff_group.command(name="action", description="Promote, demote, warn, strike, or suspend a staff member.")
         @discord.app_commands.choices(action=[
             discord.app_commands.Choice(name="Promote", value="promote"),
             discord.app_commands.Choice(name="Demote", value="demote"),
@@ -217,7 +219,7 @@ def setup_staff(bot, get_store, logger):
             await store.set(str(interaction.guild.id), records)
             await interaction.response.send_message(f"{user.display_name}: {selected} completed.", ephemeral=True)
 
-        @bot.tree.command(name="staff-loa", description="Place a staff member on leave of absence.")
+        @staff_group.command(name="loa", description="Place a staff member on leave of absence.")
         @discord.app_commands.describe(user="Staff member", days="Length of leave in days")
         async def staff_loa_command(interaction: discord.Interaction, user: discord.Member, days: discord.app_commands.Range[int, 1, 90] = 7):
             if not _command_can_manage(interaction):
@@ -238,7 +240,7 @@ def setup_staff(bot, get_store, logger):
             await store.set(str(interaction.guild.id), records)
             await interaction.response.send_message(f"{user.display_name} is now on LOA for {days} day(s).", ephemeral=True)
 
-        @bot.tree.command(name="loa-status", description="Check a staff member's leave of absence status.")
+        @staff_group.command(name="loa-status", description="Check a staff member's leave of absence status.")
         async def loa_status_command(interaction: discord.Interaction, user: discord.Member):
             if not _command_can_manage(interaction):
                 return await interaction.response.send_message("You do not have permission to view staff leave status.", ephemeral=True)
@@ -259,7 +261,7 @@ def setup_staff(bot, get_store, logger):
                 message = f"{user.display_name} is on LOA. Time remaining: {remaining // 86400} day(s), {(remaining % 86400) // 3600} hour(s)."
             await interaction.response.send_message(message, ephemeral=True)
 
-        @bot.tree.command(name="ban", description="Ban a member from this server.")
+        @moderation_group.command(name="ban", description="Ban a member from this server.")
         @discord.app_commands.describe(user="Member to ban", reason="Reason for the ban")
         async def ban_member_command(interaction: discord.Interaction, user: discord.Member, reason: str = "No reason provided"):
             if not interaction.guild or not interaction.user.guild_permissions.ban_members:
@@ -274,7 +276,7 @@ def setup_staff(bot, get_store, logger):
                 return await interaction.response.send_message("Discord could not ban that member. Check permissions and role hierarchy.", ephemeral=True)
             await interaction.response.send_message(f"{user.display_name} was banned. Reason: {reason[:500]}", ephemeral=True)
 
-        @bot.tree.command(name="warn", description="Warn a non-staff server member.")
+        @moderation_group.command(name="warn", description="Warn a non-staff server member.")
         @discord.app_commands.describe(user="Non-staff member to warn", reason="Reason for the warning")
         async def warn_member_command(interaction: discord.Interaction, user: discord.Member, reason: str = "No reason provided"):
             if not interaction.guild or not interaction.user.guild_permissions.moderate_members:
@@ -291,7 +293,7 @@ def setup_staff(bot, get_store, logger):
             await store.set(str(interaction.guild.id), records)
             await interaction.response.send_message(f"{user.display_name} was warned. Reason: {reason[:500]}", ephemeral=True)
 
-        @bot.tree.command(name="mute", description="Timeout a staff member.")
+        @moderation_group.command(name="mute", description="Timeout a staff member.")
         @discord.app_commands.describe(user="Staff member to mute", minutes="Timeout length in minutes", reason="Reason for the mute")
         async def mute_staff_command(interaction: discord.Interaction, user: discord.Member, minutes: discord.app_commands.Range[int, 1, 40320] = 60, reason: str = "No reason provided"):
             if not interaction.guild or not interaction.user.guild_permissions.moderate_members:
@@ -307,7 +309,7 @@ def setup_staff(bot, get_store, logger):
                 return await interaction.response.send_message("Discord could not mute that staff member. Check permissions and role hierarchy.", ephemeral=True)
             await interaction.response.send_message(f"{user.display_name} was muted for {minutes} minute(s). Reason: {reason[:500]}", ephemeral=True)
 
-        @bot.tree.command(name="unmute", description="Remove a timeout from a staff member.")
+        @moderation_group.command(name="unmute", description="Remove a timeout from a staff member.")
         @discord.app_commands.describe(user="Staff member to unmute", reason="Reason for removing the mute")
         async def unmute_staff_command(interaction: discord.Interaction, user: discord.Member, reason: str = "No reason provided"):
             if not interaction.guild or not interaction.user.guild_permissions.moderate_members:
@@ -321,6 +323,8 @@ def setup_staff(bot, get_store, logger):
                 return await interaction.response.send_message("Discord could not remove that timeout.", ephemeral=True)
             await interaction.response.send_message(f"{user.display_name} was unmuted. Reason: {reason[:500]}", ephemeral=True)
 
+        bot.tree.add_command(staff_group)
+        bot.tree.add_command(moderation_group)
         bot._staff_rank_commands_registered = True
 
     bot.staff_dashboard_audit_store = get_store("staff_dashboard_audit")
