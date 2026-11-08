@@ -1656,7 +1656,7 @@ async def open_ticket_for(interaction: discord.Interaction, panel: dict, option:
 
         custom_message = option.get("ticket_message") or panel.get("ticket_message")
         if custom_message:
-            body = custom_message.replace("{user}", user.mention).replace("{type}", option_label)
+            body = custom_message.replace("{user}", user.display_name).replace("{username}", user.display_name).replace("{display_name}", user.display_name).replace("{member}", user.display_name).replace("{mention}", user.mention).replace("{user_mention}", user.mention).replace("{member_mention}", user.mention).replace("{type}", option_label).replace("{server}", guild.name)
         else:
             body = "Thank you for contacting support.\nPlease describe your issue and wait for a response."
 
