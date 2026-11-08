@@ -1009,7 +1009,7 @@ async def _verification_refresh_loop(bot):
                 channel = guild.get_channel(int(channel_id)) if channel_id.isdigit() else None
                 if not isinstance(channel, discord.TextChannel):
                     continue
-                content = str(module.get("message") or "Read the rules and complete verification to access Cedar Cove.")[:1800]
+                content = str(module.get("message") or "Read the rules and complete verification to access Cedar Cove.")[:4000]
                 embed = discord.Embed(title="Cedar Cove Verification", description=content, color=discord.Color.blurple())
                 view_cls = getattr(bot, "verification_view_cls", None)
                 view = view_cls() if view_cls else None
@@ -1063,7 +1063,7 @@ async def send_verification_message(request):
         return _json(request, {"error": "Verified and Unverified roles must be different."}, 400)
     if not module.get("enabled"):
         return _json(request, {"error": "Enable and keep verification settings before publishing."}, 400)
-    content = str(module.get("message") or "Welcome to Cedar Cove! Click Verify below after reading the instructions.")[:1800]
+    content = str(module.get("message") or "Welcome to Cedar Cove! Click Verify below after reading the instructions.")[:4000]
     embed = discord.Embed(title="Cedar Cove Verification", description=content, color=discord.Color.blurple())
     embed.set_footer(text="Cedar Cove • Complete verification to unlock the server")
     view_cls = getattr(request.app["staff_bot"], "verification_view_cls", None)
