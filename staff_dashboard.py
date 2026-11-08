@@ -916,6 +916,8 @@ async def _dashboard_log_member_update(before, after):
             await _update_staff_ladder_post(after.guild, "Staff ladder updated")
 
 async def _verification_member_join(member):
+    if member.bot:
+        return
     bot = member.guild._state._get_client()
     store = getattr(bot, "staff_dashboard_store", None)
     pending = getattr(bot, "verification_pending_store", None)
@@ -937,7 +939,7 @@ async def _verification_member_join(member):
         try:
             await member.add_roles(unverified_role, reason="Awaiting Cedar Cove verification")
         except (discord.Forbidden, discord.HTTPException):
-            pass
+            return
     timeout_minutes = max(1, min(43200, int(module.get("verificationTimeoutMinutes") or 1440)))
     action = str(module.get("failureAction") or "kick").lower()
     if action not in {"ban", "kick", "mute", "none"}:
