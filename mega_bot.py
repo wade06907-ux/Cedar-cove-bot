@@ -3425,6 +3425,41 @@ async def antiraid_cmd(interaction: discord.Interaction, enabled: bool,
         f"🛡️ Anti-raid **{'enabled' if enabled else 'disabled'}**. Trigger: **{join_threshold} joins / {window_seconds}s**.",
         ephemeral=True)
 
+simulate_group = app_commands.Group(name="simulate", description="Safely test server security protections")
+
+@simulate_group.command(name="raid", description="Simulate a raid using a chosen number of join actions")
+@app_commands.checks.has_permissions(administrator=True)
+@app_commands.describe(join_actions="How many simulated members join during the detection window")
+async def simulate_raid_cmd(
+    interaction: discord.Interaction,
+    join_actions: app_commands.Range[int, 1, 50] = 6,
+):
+    if interaction.guild is None:
+        await interaction.response.send_message("This command only works in a server.", ephemeral=True)
+        return
+    config = await security_settings.find_one({"guild_id": interaction.guild.id}) or {}
+    anti = config.get("antiraid", {})
+    threshold = max(2, min(25, int(anti.get("threshold", 6))))
+    window = max(10, min(120, int(anti.get("window_seconds", 20))))
+    would_trigger = int(join_actions) >= threshold
+    state = "enabled" if anti.get("enabled") else "disabled"
+    outcome = (
+        f"🚨 **Simulation result: raid threshold reached.** {join_actions} simulated joins "
+        f"would trigger lockdown at {threshold} joins within {window} seconds."
+        if would_trigger else
+        f"🛡️ **Simulation result: threshold not reached.** {join_actions} simulated joins "
+        f"are below the {threshold}-join threshold within {window} seconds."
+    )
+    await interaction.response.send_message(
+        f"{outcome}\nAnti-raid is currently **{state}**. "
+        "This is a dry run: no members were created, no channels were locked, "
+        "and your anti-raid settings were not changed.",
+        ephemeral=True,
+    )
+
+bot.tree.add_command(simulate_group)
+
+
 @bot.event
 async def on_member_join(member: discord.Member):
     # Anti-raid detection is configured independently for each destination server.
