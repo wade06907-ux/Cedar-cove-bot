@@ -1467,8 +1467,8 @@ async def publish_panel(request):
         return _json(request, {"error": "The selected panel destination is not a text channel in this server."}, 400)
     me = guild.me
     perms = channel.permissions_for(me) if me else None
-    if not perms or not (perms.send_messages and perms.embed_links):
-        return _json(request, {"error": "The bot needs Send Messages and Embed Links in the selected channel."}, 403)
+    if not perms or not perms.send_messages:
+        return _json(request, {"error": "The bot needs Send Messages in the selected channel."}, 403)
     category_id = panel.get("categoryId")
     role_ids = panel.get("supportRoleIds") or ([panel.get("supportRoleId")] if panel.get("supportRoleId") else [])
     role_ids = [int(value) for value in role_ids if str(value or "").isdigit()]
@@ -1504,6 +1504,8 @@ async def publish_panel(request):
             child_format = str(child.get("channelNameFormat") or "{username}-{number}")[:100]
             child_types = child.get("types") if isinstance(child.get("types"), list) else []
             child_type = str(child_types[0] if child_types else child_label)[:80]
+            if child.get("buttonEnabled", True) is False:
+                continue
             options.append({"label": child_label, "description": None, "emoji": None, "ticket_message": child_welcome, "channel_name_format": child_format, "category_id": int(category.id) if category else None, "role_id": int(roles[0].id) if roles else None, "role_ids": [int(role.id) for role in roles], "ticket_type": child_type})
         if not options:
             return _json(request, {"error": "Add at least one single panel to this multi-panel."}, 400)
@@ -1512,8 +1514,6 @@ async def publish_panel(request):
         if not types:
             types = ["General Support"]
         options = [{"label": x, "description": None, "emoji": None, "ticket_message": ticket_welcome, "channel_name_format": channel_name_format, "category_id": int(category.id) if category else None, "role_id": int(roles[0].id) if roles else None, "role_ids": [int(role.id) for role in roles]} for x in types]
-    embed = discord.Embed(title=title, description=description, color=discord.Color.blurple())
-    embed.set_footer(text=guild.name, icon_url=guild.icon.url if guild.icon else None)
     try:
         staff_bot = request.app["staff_bot"]
         if len(options) == 1:
@@ -1521,7 +1521,9 @@ async def publish_panel(request):
             view = staff_bot.ticket_open_view_cls(label=button_label)
         else:
             view = staff_bot.ticket_select_view_cls(options)
-        msg = await channel.send(content=panel_content or None, embed=embed, view=view)
+        plain_text = "\\n".join(part for part in [title, description] if part).strip()
+        content = "\\n\\n".join(part for part in [panel_content, plain_text] if part).strip()
+        msg = await channel.send(content=content[:2000] or "🎫 Open a ticket below.", view=view)
         panel_record = {"title": title, "description": description, "channel_id": int(channel.id), "category_id": int(category.id) if category else None, "role_id": int(roles[0].id) if roles else None, "options": options, "message_id": msg.id, "guild_id": guild.id, "channel_name_format": channel_name_format, "ticket_message": ticket_welcome, "created_by_dashboard": True}
         await request.app["panels_store"].set(msg.id, panel_record)
         await _audit(request, gid, user, "publish_panel", f"Ticket panel posted in #{channel.name}")
