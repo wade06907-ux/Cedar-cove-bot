@@ -2267,12 +2267,8 @@ class ManageMultiPanelView(discord.ui.View):
             return
 
         channel = interaction.guild.get_channel(builder["channel_id"])
-        embed = discord.Embed(title=builder["title"], description=builder["description"], color=discord.Color.blurple())
-        embed.set_footer(
-            text=interaction.guild.name,
-            icon_url=interaction.guild.icon.url if interaction.guild.icon else None,
-        )
-        msg = await channel.send(content=builder.get("panel_message") or None, embed=embed, view=TicketSelectView(builder["options"]))
+        panel_text = "\\n\\n".join(part for part in [builder.get("panel_message") or "", builder["title"], builder["description"]] if part).strip()
+        msg = await channel.send(content=panel_text[:2000] or "🎫 Open a ticket below.", view=TicketSelectView(builder["options"]))
 
         builder["message_id"] = msg.id
         await panels_store.set(msg.id, builder)
@@ -2389,12 +2385,8 @@ class DestinationView(discord.ui.View):
 
         channel = interaction.guild.get_channel(self.channel_id)
         opt = self.builder["options"][0]
-        embed = discord.Embed(title=self.builder["title"], description=self.builder["description"], color=discord.Color.blurple())
-        embed.set_footer(
-            text=interaction.guild.name,
-            icon_url=interaction.guild.icon.url if interaction.guild.icon else None,
-        )
-        msg = await channel.send(embed=embed, view=TicketOpenView(opt["label"], opt.get("emoji")))
+        panel_text = "\\n\\n".join(part for part in [self.builder["title"], self.builder["description"]] if part).strip()
+        msg = await channel.send(content=panel_text[:2000] or "🎫 Open a ticket below.", view=TicketOpenView(opt["label"], opt.get("emoji")))
 
         self.builder["message_id"] = msg.id
         await panels_store.set(msg.id, self.builder)
