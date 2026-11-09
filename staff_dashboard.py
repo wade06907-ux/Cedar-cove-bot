@@ -1059,10 +1059,7 @@ async def _verification_refresh_loop(bot):
                 channel = guild.get_channel(int(channel_id)) if channel_id.isdigit() else None
                 if not isinstance(channel, discord.TextChannel):
                     continue
-                content = str(module.get("message") or "Read the instructions below, then type the required text in this channel.")[:4000]
-                embed = discord.Embed(title="Cedar Cove Verification", description=content, color=discord.Color.blurple())
-                embed.add_field(name="Type this exact text to verify", value=str(module.get("requiredText") or "Not configured — staff must set the required text.")[:1024], inline=False)
-                embed.set_footer(text="Cedar Cove • Type the exact text above to unlock the server")
+                content = str(module.get("message") or "Welcome to Cedar Cove! Please complete verification to access the server.")[:2000]
                 view = None
                 message_id = str(module.get("messageId") or "")
                 try:
@@ -1073,9 +1070,9 @@ async def _verification_refresh_loop(bot):
                         except discord.NotFound:
                             old = None
                     if old and old.author.id == bot.user.id:
-                        await old.edit(embed=embed, view=view, content=None, allowed_mentions=discord.AllowedMentions.none())
+                        await old.edit(content=content, embeds=[], view=view, allowed_mentions=discord.AllowedMentions.none())
                     else:
-                        sent = await channel.send(embed=embed, view=view, allowed_mentions=discord.AllowedMentions.none())
+                        sent = await channel.send(content=content, view=view, allowed_mentions=discord.AllowedMentions.none())
                         module["messageId"] = str(sent.id)
                         config = await bot.staff_dashboard_store.get(str(guild.id), {})
                         config.setdefault("modules", {})["verification"] = module
@@ -1119,10 +1116,7 @@ async def send_verification_message(request):
         return _json(request, {"error": "Verified and Unverified roles must be different."}, 400)
     if not module.get("enabled"):
         return _json(request, {"error": "Enable and keep verification settings before publishing."}, 400)
-    content = str(module.get("message") or "Read the instructions below, then type the required text in this channel.")[:4000]
-    embed = discord.Embed(title="Cedar Cove Verification", description=content, color=discord.Color.blurple())
-    embed.add_field(name="Type this exact text to verify", value=str(module.get("requiredText") or "Not configured — staff must set the required text.")[:1024], inline=False)
-    embed.set_footer(text="Cedar Cove • Type the exact text above to unlock the server")
+    content = str(module.get("message") or "Welcome to Cedar Cove! Please complete verification to access the server.")[:2000]
     view = None
     merge = bool(body.get("merge"))
     message_id = str(module.get("messageId") or "")
@@ -1134,11 +1128,11 @@ async def send_verification_message(request):
             except discord.NotFound:
                 old = None
         if old and old.author.id == request.app["staff_bot"].user.id:
-            await old.edit(content=None, embed=embed, view=view, allowed_mentions=discord.AllowedMentions.none())
+            await old.edit(content=content, embeds=[], view=view, allowed_mentions=discord.AllowedMentions.none())
             sent = old
             result_action = "updated"
         else:
-            sent = await channel.send(embed=embed, view=view, allowed_mentions=discord.AllowedMentions.none())
+            sent = await channel.send(content=content, view=view, allowed_mentions=discord.AllowedMentions.none())
             result_action = "sent"
         module["channelId"] = str(channel.id)
         module["messageId"] = str(sent.id)
@@ -1147,7 +1141,7 @@ async def send_verification_message(request):
         await _audit(request, gid, user, "verification_message", f"Verification message {result_action} in #{channel.name}")
         return _json(request, {"ok": True, "action": result_action, "channelName": channel.name, "messageId": str(sent.id)})
     except discord.Forbidden:
-        return _json(request, {"error": "The bot needs Send Messages and Embed Links in the verification channel."}, 403)
+        return _json(request, {"error": "The bot needs Send Messages permission in the verification channel."}, 403)
     except discord.HTTPException as exc:
         return _json(request, {"error": f"Discord could not publish the verification message (HTTP {exc.status})."}, 502)
 
