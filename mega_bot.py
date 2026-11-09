@@ -1660,20 +1660,11 @@ async def open_ticket_for(interaction: discord.Interaction, panel: dict, option:
         else:
             body = "Thank you for contacting support.\nPlease describe your issue and wait for a response."
 
-        embed = discord.Embed(
-            title="🎫 New Ticket",
-            description=body,
-            color=discord.Color.blurple(),
-        )
-        embed.set_footer(
-            text=f"{guild.name} • Ticket #{number:04d}",
-            icon_url=guild.icon.url if guild.icon else None,
-        )
-
+        ticket_text = f"🎫 New Ticket — {guild.name} · #{number:04d}\n\n{body}"
         msg = await channel.send(
-            content=" ".join(support_role.mention for support_role in roles) if roles else None,
-            embed=embed,
+            content=(" ".join(support_role.mention for support_role in roles) + "\n" if roles else "") + ticket_text,
             view=TicketControlView(),
+            allowed_mentions=discord.AllowedMentions(roles=True, users=False, everyone=False),
         )
 
         await tickets_store.set(channel.id, {
@@ -1784,7 +1775,7 @@ class TicketControlView(LoggingView):
 
     @discord.ui.button(label="🔒 Close", style=discord.ButtonStyle.red, custom_id="persistent:ticket_close")
     async def close(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await handle_close(interaction)
+        await interaction.response.send_modal(TicketCloseReasonModal())
 
 
 class TicketClaimedView(LoggingView):
@@ -1797,7 +1788,7 @@ class TicketClaimedView(LoggingView):
 
     @discord.ui.button(label="🔒 Close", style=discord.ButtonStyle.red, custom_id="persistent:ticket_close2")
     async def close(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await handle_close(interaction)
+        await interaction.response.send_modal(TicketCloseReasonModal())
 
 
 class TicketClosedView(LoggingView):
@@ -1849,8 +1840,7 @@ async def handle_claim(interaction: discord.Interaction):
         await interaction.channel.set_permissions(role, view_channel=True, send_messages=False, read_message_history=True)
     await interaction.channel.set_permissions(interaction.user, view_channel=True, send_messages=True, read_message_history=True)
 
-    embed = discord.Embed(description=f"🙋 Claimed by {interaction.user.mention}", color=discord.Color.green())
-    await interaction.channel.send(embed=embed, view=TicketClaimedView())
+    await interaction.channel.send(f"🙋 Ticket claimed by {interaction.user.mention}.", view=TicketClaimedView())
     await interaction.followup.send("Ticket claimed.", ephemeral=True)
 
 
@@ -1871,40 +1861,87 @@ async def handle_unclaim(interaction: discord.Interaction):
     if role:
         await interaction.channel.set_permissions(role, view_channel=True, send_messages=True, read_message_history=True)
 
-    embed = discord.Embed(description="🔓 Ticket unclaimed and reopened to the support team.", color=discord.Color.greyple())
-    await interaction.channel.send(embed=embed, view=TicketControlView())
+    await interaction.channel.send("🔓 Ticket unclaimed and reopened to the support team.", view=TicketControlView())
     await interaction.followup.send("Ticket unclaimed.", ephemeral=True)
 
 
-async def handle_close(interaction: discord.Interaction, skip_defer: bool = False):
-    if not skip_defer:
+class TicketCloseReasonModal(discord.ui.Modal, title="Close ticket"):
+    reason = discord.ui.TextInput(
+        label="Reason for closing",
+        placeholder="Explain why this ticket is being closed...",
+        style=discord.TextStyle.paragraph,
+        min_length=1,
+        max_length=1000,
+        required=True,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await handle_close(interaction, reason=str(self.reason.value).strip())
+
+
+async def handle_close(interaction: discord.Interaction, reason: str = ""):
+    if not interaction.response.is_done():
         await interaction.response.defer(ephemeral=True, thinking=True)
     record = await get_ticket_record(interaction.channel.id)
     if not record:
         await interaction.followup.send("This isn't a ticket channel.", ephemeral=True)
         return
-    if record["status"] == "closed":
+    if record.get("status") == "closed":
         await interaction.followup.send("This ticket is already closed.", ephemeral=True)
         return
+    reason = (reason or "").strip()
+    if not reason:
+        await interaction.followup.send("A closure reason is required.", ephemeral=True)
+        return
+
+    opener_id = int(record.get("opener_id") or 0)
+    claimer_id = int(record.get("claimed_by") or 0)
+    opener = interaction.guild.get_member(opener_id) if opener_id else None
+    if opener is None and opener_id:
+        try:
+            opener = await interaction.guild.fetch_member(opener_id)
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            opener = None
+    claimer = interaction.guild.get_member(claimer_id) if claimer_id else None
+    claimer_name = claimer.display_name if claimer else ("Unknown" if claimer_id else "Unclaimed")
+    ticket_name = interaction.channel.name
+    number = record.get("number", 0)
 
     record["status"] = "closed"
+    record["closed_by"] = interaction.user.id
+    record["closed_by_name"] = interaction.user.display_name
+    record["close_reason"] = reason
+    record["closed_at"] = int(time.time())
     await tickets_store.set(interaction.channel.id, record)
 
-    opener = interaction.guild.get_member(record["opener_id"])
     if opener:
-        await interaction.channel.set_permissions(opener, view_channel=True, send_messages=False, read_message_history=True)
+        try:
+            await interaction.channel.set_permissions(opener, view_channel=True, send_messages=False, read_message_history=True)
+        except (discord.Forbidden, discord.HTTPException):
+            pass
 
-    number = record.get("number", 0)
     try:
         await interaction.channel.edit(name=f"closed-{number:04d}")
     except discord.HTTPException:
         pass
 
-    embed = discord.Embed(
-        description=f"🔒 Ticket closed by {interaction.user.mention}. The channel is now locked and archived.",
-        color=discord.Color.red(),
+    await interaction.channel.send(
+        f"🔒 Ticket closed by {interaction.user.mention}.\n"
+        f"Ticket: {ticket_name}\nClaimed by: {claimer_name}\nReason: {reason}",
+        view=TicketClosedView(),
+        allowed_mentions=discord.AllowedMentions.none(),
     )
-    await interaction.channel.send(embed=embed, view=TicketClosedView())
+
+    if opener:
+        try:
+            await opener.send(
+                f"🔒 Your **{ticket_name}** ticket in **{interaction.guild.name}** was closed.\n"
+                f"Ticket: {ticket_name}\nClaimed by: {claimer_name}\n"
+                f"Closed by: {interaction.user.display_name}\nReason: {reason}"
+            )
+        except (discord.Forbidden, discord.HTTPException):
+            pass
+
     await interaction.followup.send("Ticket closed.", ephemeral=True)
 
 
@@ -1929,8 +1966,7 @@ async def handle_reopen(interaction: discord.Interaction):
     except discord.HTTPException:
         pass
 
-    embed = discord.Embed(description=f"🔓 Ticket reopened by {interaction.user.mention}.", color=discord.Color.green())
-    await interaction.channel.send(embed=embed, view=TicketControlView())
+    await interaction.channel.send(f"🔓 Ticket reopened by {interaction.user.mention}.", view=TicketControlView())
     await interaction.followup.send("Ticket reopened.", ephemeral=True)
 
 
@@ -3533,7 +3569,10 @@ async def unclaim_cmd(interaction: discord.Interaction):
 
 @bot.tree.command(name="close", description="Close this ticket")
 async def close_cmd(interaction: discord.Interaction):
-    await handle_close(interaction)
+    if not interaction.guild or not await get_ticket_record(interaction.channel.id):
+        await interaction.response.send_message("This isn't a ticket channel.", ephemeral=True)
+        return
+    await interaction.response.send_modal(TicketCloseReasonModal())
 
 
 @bot.tree.command(name="reopen", description="Reopen this ticket")
