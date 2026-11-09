@@ -2022,7 +2022,21 @@ async def _audit(request, gid, user, action, detail):
 
 async def _staff_guild(request, user=None):
     bot = request.app["staff_bot"]
-    discord_id = str((user or {}).get("discordId") or "").strip()
+    account = user or {}
+    discord_id = str(
+        account.get("discordId")
+        or account.get("discord_id")
+        or account.get("linkedDiscordId")
+        or account.get("linked_discord_id")
+        or account.get("discordUserId")
+        or ""
+    ).strip()
+
+    # Prefer an unambiguous Cedar Cove match. This avoids making staff access
+    # depend on whether the auth service calls the linked ID discordId or discord_id.
+    cedar_guilds = [guild for guild in bot.guilds if "cedar cove" in guild.name.casefold()]
+    if len(cedar_guilds) == 1:
+        return cedar_guilds[0]
 
     if discord_id.isdigit():
         for guild in bot.guilds:
@@ -2039,9 +2053,10 @@ async def _staff_guild(request, user=None):
             if _member_can_manage_staff(member):
                 return guild
 
-    # The primary website owner can use the only server connected to this bot.
-    # If the bot is in multiple servers, never guess which one they intended.
-    if str((user or {}).get("username", "")).casefold() == "glitchstorm7320" and len(bot.guilds) == 1:
+    # Only use the sole connected server when the designated owner account is
+    # authenticated; never guess between multiple unrelated servers.
+    username = str(account.get("username") or account.get("userName") or "").casefold()
+    if username == "glitchstorm7320" and len(bot.guilds) == 1:
         return bot.guilds[0]
 
     return None
@@ -2078,7 +2093,14 @@ def _can_manage_staff(user, guild):
     if str(user.get("username", "")).casefold() == "glitchstorm7320":
         return True
 
-    discord_id = str(user.get("discordId") or "").strip()
+    discord_id = str(
+        user.get("discordId")
+        or user.get("discord_id")
+        or user.get("linkedDiscordId")
+        or user.get("linked_discord_id")
+        or user.get("discordUserId")
+        or ""
+    ).strip()
     if not discord_id.isdigit():
         return False
 
@@ -2107,7 +2129,7 @@ async def dashboard_access(request):
         return error
     if not bool(user.get("whitelisted", False)):
         return _json(request, {"staffManagement": False, "dashboardAccess": False})
-    guild = await _staff_guild(request)
+    guild = await _staff_guild(request, user)
     can_manage = bool(guild and _can_manage_staff(user, guild))
     return _json(request, {"staffManagement": can_manage, "dashboardAccess": True})
 
