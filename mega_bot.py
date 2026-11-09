@@ -2089,10 +2089,7 @@ class RequestCloseView(LoggingView):
 
     @discord.ui.button(label="✅ Yes, close it", style=discord.ButtonStyle.red, custom_id="persistent:requestclose_yes")
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.edit_message(
-            content=f"✅ {interaction.user.mention} confirmed — closing the ticket...", embed=None, view=None
-        )
-        await handle_close(interaction, skip_defer=True)
+        await interaction.response.send_modal(TicketCloseReasonModal())
 
     @discord.ui.button(label="❌ No, keep open", style=discord.ButtonStyle.gray, custom_id="persistent:requestclose_no")
     async def deny(self, interaction: discord.Interaction, button: discord.ui.Button):
