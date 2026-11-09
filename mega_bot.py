@@ -2009,11 +2009,11 @@ async def handle_transfer(interaction: discord.Interaction, target: discord.Memb
         await interaction.channel.set_permissions(role, view_channel=True, send_messages=False, read_message_history=True)
     await interaction.channel.set_permissions(target, view_channel=True, send_messages=True, read_message_history=True)
 
-    embed = discord.Embed(
-        description=f"🔁 Ticket transferred to {target.mention} by {interaction.user.mention}.",
-        color=discord.Color.blurple(),
+    await interaction.channel.send(
+        f"{target.mention}\n🔁 Ticket transferred to {target.mention} by {interaction.user.mention}.",
+        view=TicketClaimedView(),
+        allowed_mentions=discord.AllowedMentions(users=True),
     )
-    await interaction.channel.send(content=target.mention, embed=embed, view=TicketClaimedView())
     await interaction.followup.send(f"Transferred to {target.mention}.", ephemeral=True)
 
 
@@ -2037,11 +2037,7 @@ async def handle_add_user(interaction: discord.Interaction, target: discord.Memb
         await interaction.followup.send("I don't have permission to edit this channel's permissions.", ephemeral=True)
         return
 
-    embed = discord.Embed(
-        description=f"➕ {target.mention} was added to this ticket by {interaction.user.mention}.",
-        color=discord.Color.green(),
-    )
-    await interaction.channel.send(embed=embed)
+    await interaction.channel.send(f"➕ {target.mention} was added to this ticket by {interaction.user.mention}.")
     await interaction.followup.send(f"Added {target.mention} to the ticket.", ephemeral=True)
 
 
@@ -2066,11 +2062,7 @@ async def handle_remove_user(interaction: discord.Interaction, target: discord.M
         await interaction.followup.send("I don't have permission to edit this channel's permissions.", ephemeral=True)
         return
 
-    embed = discord.Embed(
-        description=f"➖ {target.mention} was removed from this ticket by {interaction.user.mention}.",
-        color=discord.Color.red(),
-    )
-    await interaction.channel.send(embed=embed)
+    await interaction.channel.send(f"➖ {target.mention} was removed from this ticket by {interaction.user.mention}.")
     await interaction.followup.send(f"Removed {target.mention} from the ticket.", ephemeral=True)
 
 
@@ -2120,18 +2112,11 @@ async def handle_request_close(interaction: discord.Interaction):
         return
 
     opener = interaction.guild.get_member(record["opener_id"])
-    embed = discord.Embed(
-        title="Close this ticket?",
-        description=(
-            f"{interaction.user.mention} has requested to close this ticket.\n\n"
-            "Do you want to close it now?"
-        ),
-        color=discord.Color.orange(),
-    )
     await interaction.response.send_message(
-        content=opener.mention if opener else None,
-        embed=embed,
+        content=(opener.mention + "\\n" if opener else "") +
+        f"🔒 {interaction.user.mention} has requested to close this ticket. Do you want to close it now?",
         view=RequestCloseView(),
+        allowed_mentions=discord.AllowedMentions(users=True),
     )
 
 
