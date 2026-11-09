@@ -938,7 +938,7 @@ async def _verification_text_message(message):
     unverified_id = str(module.get("unverifiedRoleId") or "")
     verified_role = message.guild.get_role(int(verified_id)) if verified_id.isdigit() else None
     unverified_role = message.guild.get_role(int(unverified_id)) if unverified_id.isdigit() else None
-    if verified_role is None or verified_role in member.roles:
+    if verified_role is not None and verified_role in member.roles:
         return
     if unverified_role is not None and unverified_role not in member.roles:
         return
@@ -946,23 +946,61 @@ async def _verification_text_message(message):
     record = await pending.get(key)
     if not record:
         return
-    if message.content.strip().casefold() == expected.casefold():
+
+    async def _delete_after(msg, seconds=10):
+        await asyncio.sleep(seconds)
         try:
-            await member.add_roles(verified_role, reason="Completed Cedar Cove text verification")
-            if unverified_role is not None and unverified_role in member.roles:
-                await member.remove_roles(unverified_role, reason="Completed Cedar Cove text verification")
-            await pending.delete(key)
-            await message.delete()
-        except (discord.Forbidden, discord.HTTPException) as exc:
-            getattr(bot, "staff_dashboard_logger", __import__("logging").getLogger("mega_bot.verification")).warning("Text verification could not finish guild=%s member=%s: %s", message.guild.id, member.id, exc)
+            await msg.delete()
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            pass
+
+    async def _reply_then_delete(text):
+        try:
+            response = await message.channel.send(text, allowed_mentions=discord.AllowedMentions.none())
+            asyncio.create_task(_delete_after(response, 10))
+        except (discord.Forbidden, discord.HTTPException):
+            pass
+
+    bot_member = message.guild.me
+    can_manage = bool(
+        verified_role is not None
+        and unverified_role is not None
+        and verified_role != unverified_role
+        and bot_member is not None
+        and bot_member.guild_permissions.manage_roles
+        and bot_member.top_role > verified_role
+        and bot_member.top_role > unverified_role
+    )
+    if not can_manage:
+        await _reply_then_delete("❌ Verification is temporarily unavailable. Please contact a staff member.")
+        asyncio.create_task(_delete_after(message, 10))
         return
-    async def _delete_incorrect_verification():
-        await asyncio.sleep(20)
+
+    if message.content.strip().casefold() != expected.casefold():
         try:
             await message.delete()
         except (discord.NotFound, discord.Forbidden, discord.HTTPException):
             pass
-    asyncio.create_task(_delete_incorrect_verification())
+        await _reply_then_delete("❌ Incorrect verification text. Please try again.")
+        return
+
+    try:
+        await member.add_roles(verified_role, reason="Completed Cedar Cove text verification")
+        if unverified_role in member.roles:
+            await member.remove_roles(unverified_role, reason="Completed Cedar Cove text verification")
+        await pending.delete(key)
+        try:
+            await message.delete()
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            pass
+        await _reply_then_delete(f"✅ You are verified into {message.guild.name}!")
+    except (discord.Forbidden, discord.HTTPException) as exc:
+        getattr(bot, "staff_dashboard_logger", __import__("logging").getLogger("mega_bot.verification")).warning(
+            "Text verification could not finish guild=%s member=%s: %s",
+            message.guild.id, member.id, exc
+        )
+        await _reply_then_delete("❌ I couldn't assign your verification roles. Please contact a staff member.")
+        asyncio.create_task(_delete_after(message, 10))
 
 
 async def _verification_member_join(member):
