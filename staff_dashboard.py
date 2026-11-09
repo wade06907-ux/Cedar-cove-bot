@@ -940,12 +940,9 @@ async def _verification_text_message(message):
     unverified_role = message.guild.get_role(int(unverified_id)) if unverified_id.isdigit() else None
     if verified_role is not None and verified_role in member.roles:
         return
-    if unverified_role is not None and unverified_role not in member.roles:
-        return
+    # The verification channel is authoritative. Existing members and testers
+    # may not have a pending record or the Unverified role yet.
     key = f"{message.guild.id}:{member.id}"
-    record = await pending.get(key)
-    if not record:
-        return
 
     async def _delete_after(msg, seconds=10):
         await asyncio.sleep(seconds)
