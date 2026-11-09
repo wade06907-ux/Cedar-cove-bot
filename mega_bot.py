@@ -1833,6 +1833,7 @@ async def handle_claim(interaction: discord.Interaction):
         return
 
     record["claimed_by"] = interaction.user.id
+    record["claimed_by_name"] = interaction.user.display_name
     await tickets_store.set(interaction.channel.id, record)
 
     role = interaction.guild.get_role(record.get("role_id")) if record.get("role_id") else None
@@ -1903,7 +1904,7 @@ async def handle_close(interaction: discord.Interaction, reason: str = ""):
         except (discord.NotFound, discord.Forbidden, discord.HTTPException):
             opener = None
     claimer = interaction.guild.get_member(claimer_id) if claimer_id else None
-    claimer_name = claimer.display_name if claimer else ("Unknown" if claimer_id else "Unclaimed")
+    claimer_name = claimer.display_name if claimer else (str(record.get("claimed_by_name") or "Unknown") if claimer_id else "Unclaimed")
     ticket_name = interaction.channel.name
     number = record.get("number", 0)
 
@@ -1994,6 +1995,7 @@ async def handle_transfer(interaction: discord.Interaction, target: discord.Memb
 
     old_claimer_id = record.get("claimed_by")
     record["claimed_by"] = target.id
+    record["claimed_by_name"] = target.display_name
     await tickets_store.set(interaction.channel.id, record)
 
     if old_claimer_id and old_claimer_id != target.id:
