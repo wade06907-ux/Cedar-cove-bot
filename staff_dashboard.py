@@ -828,7 +828,7 @@ async def _update_staff_ladder_post(guild, event_text="Staff roster updated"):
         role = guild.get_role(int(rid)) if rid.isdigit() else None
         if role:
             rank_name = str(item.get("name") or role.name)
-            ranks.append((rank_name, role))
+            ranks.append((rank_name, role, item))
             slug = re.sub(r"[^a-z0-9]+", "_", rank_name.casefold()).strip("_")
             role_tokens["role_" + slug] = rank_name
 
@@ -838,7 +838,7 @@ async def _update_staff_ladder_post(guild, event_text="Staff roster updated"):
 
     name_style = str(settings.get("staffRosterNameStyle") or "prefix").lower()
     prefix_template = str(settings.get("staffRosterPrefix") or "[role_{role_name}]")
-    for rank_name, role in ranks:
+    for rank_name, role, item in ranks:
         normalized = re.sub(r"[^a-z0-9]+", " ", rank_name.casefold()).strip()
         if normalized == "owner":
             heading = "👑 Owner"
@@ -873,7 +873,7 @@ async def _update_staff_ladder_post(guild, event_text="Staff roster updated"):
                 rendered = member.display_name
             else:
                 base_name = member.display_name
-                for configured_rank, _ in ranks:
+                for configured_rank, _, _ in ranks:
                     base_name = re.sub(r"^\s*\[" + re.escape(configured_rank) + r"\]\s*", "", base_name, count=1, flags=re.IGNORECASE)
                 prefix = prefix_template.replace("{role_name}", rank_name).replace("{display_name}", base_name)
                 for token, value in token_map.items():
