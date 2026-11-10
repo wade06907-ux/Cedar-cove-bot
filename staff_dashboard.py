@@ -857,7 +857,11 @@ async def _update_staff_ladder_post(guild, event_text="Staff roster updated"):
         members.sort(key=lambda member: member.display_name.casefold())
         lines.extend(["", f"## {heading}", ""])
         if not members:
-            lines.append("* *Open*")
+            vacancy_open = item.get("vacancyOpen") is not False
+            vacancy_message = str(item.get("vacancyMessage") or "").strip()[:100]
+            if not vacancy_message:
+                vacancy_message = "Open" if vacancy_open else "Closed"
+            lines.append(f"* *{vacancy_message}*")
             continue
 
         slug = re.sub(r"[^a-z0-9]+", "_", rank_name.casefold()).strip("_")
@@ -1345,7 +1349,7 @@ async def save_staff_ladder(request):
         if role is None or role.is_default():
             return _json(request, {"error": "A selected Discord role no longer exists."}, 400)
         seen.add(role_id)
-        cleaned.append({"id": str(item.get("id") or secrets.token_hex(6)), "name": name, "description": description, "roleId": role_id})
+        cleaned.append({"id": str(item.get("id") or secrets.token_hex(6)), "name": name, "description": description, "roleId": role_id, "vacancyOpen": item.get("vacancyOpen") is not False, "vacancyMessage": str(item.get("vacancyMessage") or "").strip()[:100]})
     config = await request.app["staff_store"].get(str(guild.id), {})
     modules = config.setdefault("modules", {})
     modules["staff_ladder"] = {"items": cleaned, "updatedAt": int(time.time()), "updatedBy": str(user.get("username") or "")}
