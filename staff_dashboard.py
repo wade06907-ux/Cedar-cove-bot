@@ -1699,14 +1699,26 @@ async def _apply_role_nickname(member, rules):
 
 
 async def _welcome_leave_member_join(member):
-    if member.bot:
-        return
     bot = member.guild._state._get_client()
     store = getattr(bot, "staff_dashboard_store", None)
     if store is None:
         return
     config = await store.get(str(member.guild.id), {})
     module = (config.get("modules") or {}).get("welcome") or {}
+    bot_mode = str(module.get("botMode") or "ignore").lower()
+    if member.bot and bot_mode not in {"welcome", "welcome_and_role"}:
+        return
+
+    role_id = str(module.get("roleId") or "")
+    should_assign_role = bool(role_id.isdigit() and (not member.bot or bot_mode == "welcome_and_role"))
+    if should_assign_role:
+        role = member.guild.get_role(int(role_id))
+        if role and role < member.guild.me.top_role and role not in member.roles:
+            try:
+                await member.add_roles(role, reason="Automatic role on join")
+            except (discord.Forbidden, discord.HTTPException):
+                pass
+
     channel_id = str(module.get("channelId") or "")
     if not module.get("enabled") or not channel_id.isdigit():
         return
