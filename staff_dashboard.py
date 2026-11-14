@@ -2696,8 +2696,9 @@ async def _issue_appeal_link(bot, guild, member, punishment, audit_entry):
         base_url = (os.getenv("APPEALS_BASE_URL") or "https://cedar-cove-appeals.onrender.com").rstrip("/")
         link = f"{base_url}/{punishment}.html#token={token}"
         evidence = str(record.get("evidence") or "No evidence was attached to this moderation action.")
+        punishment_word = {"mute": "muted", "ban": "banned", "kick": "kicked"}.get(punishment, punishment)
         await member.send(
-            f"You have been **{punishment}** in **{guild.name}**.\\n\\n"
+            f"You have been **{punishment_word}** in **{guild.name}**.\\n\\n"
             f"**Reason:** {reason[:900]}\\n"
             f"**By:** {moderator.mention} ({moderator})\\n\\n"
             f"To appeal, please visit: {link}\\n"
