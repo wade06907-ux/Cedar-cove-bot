@@ -2843,6 +2843,35 @@ async def _finish_appeal_review(interaction, action, reason="", review_message_i
             pass
         await interaction.followup.send("Appeal escalated. The member was sent the server invite and ticket information.", ephemeral=True)
         return
+    if action == "accepted":
+        if not guild:
+            await interaction.followup.send("The original server is unavailable, so the punishment could not be reversed.", ephemeral=True)
+            return
+        punishment = record.get("punishment")
+        member = guild.get_member(int(record["memberId"]))
+        if punishment == "ban":
+            if not guild.me or not guild.me.guild_permissions.ban_members:
+                await interaction.followup.send("I need Ban Members permission to accept a ban appeal.", ephemeral=True)
+                return
+            try:
+                await guild.unban(discord.Object(id=int(record["memberId"])), reason=f"Appeal accepted by {interaction.user}")
+            except discord.NotFound:
+                pass
+            except discord.HTTPException:
+                await interaction.followup.send("I could not lift the ban. Check my Ban Members permission and try again.", ephemeral=True)
+                return
+        elif punishment == "mute" and member:
+            if not guild.me or not guild.me.guild_permissions.moderate_members:
+                await interaction.followup.send("I need Moderate Members permission to remove the timeout.", ephemeral=True)
+                return
+            try:
+                await member.timeout(None, reason=f"Appeal accepted by {interaction.user}")
+            except discord.HTTPException:
+                await interaction.followup.send("I could not remove the timeout. Check my Moderate Members permission.", ephemeral=True)
+                return
+        invite = await _appeal_server_invite(guild, ((await bot.staff_dashboard_store.get(str(guild.id), {})).get("modules") or {}).get("appeals") or {}) if punishment in {"ban", "kick"} else ""
+    else:
+        invite = ""
     new_status = "accepted" if action == "accepted" else "denied"
     result = await collection.update_one(
         {"token": record["token"], "status": {"$in": ["pending", None, ""]}},
@@ -2855,7 +2884,16 @@ async def _finish_appeal_review(interaction, action, reason="", review_message_i
         return
     try:
         user = bot.get_user(int(record["memberId"])) or await bot.fetch_user(int(record["memberId"]))
-        message = "Your Cedar Cove appeal has been **accepted**." if action == "accepted" else "Your Cedar Cove appeal has been **denied**."
+        if action == "accepted":
+            message = "Your Cedar Cove appeal has been **accepted**."
+            if record.get("punishment") == "ban":
+                message += "\nYour ban has been lifted."
+            elif record.get("punishment") == "mute":
+                message += "\nYour timeout has been removed if it was still active."
+            if invite:
+                message += f"\n\nJoin Cedar Cove here: {invite}"
+        else:
+            message = "Your Cedar Cove appeal has been **denied**."
         if reason:
             message += f"\n\n**Staff response:** {reason}"
         await user.send(message)
