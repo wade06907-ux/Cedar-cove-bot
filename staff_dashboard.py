@@ -127,6 +127,8 @@ async def public_appeal_validate(request):
         body = await request.json()
     except Exception:
         return _json(request, {"error": "Invalid appeal link."}, 400)
+    if not isinstance(body, dict):
+        return _json(request, {"error": "Invalid appeal link."}, 400)
     kind = str(body.get("kind") or "").lower()
     token = str(body.get("token") or "")
     if kind not in {"mute", "kick", "ban"} or not token or len(token) > 128:
@@ -145,6 +147,8 @@ async def public_appeal_submit(request):
     try:
         body = await request.json()
     except Exception:
+        return _json(request, {"error": "Invalid appeal submission."}, 400)
+    if not isinstance(body, dict):
         return _json(request, {"error": "Invalid appeal submission."}, 400)
     kind = str(body.get("kind") or "").lower()
     token = str(body.get("token") or "")
