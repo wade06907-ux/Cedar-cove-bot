@@ -2776,6 +2776,9 @@ async def _finish_appeal_review(interaction, action, reason="", review_message_i
         return
     guild = bot.get_guild(int(record["guildId"])) if str(record.get("guildId", "")).isdigit() else None
     if action == "escalated":
+        if interaction.guild is not None and not (interaction.user.guild_permissions.administrator or interaction.user.guild_permissions.manage_roles):
+            await interaction.followup.send("You need Manage Roles permission to escalate an appeal.", ephemeral=True)
+            return
         if not guild:
             await interaction.followup.send("The original server is unavailable.", ephemeral=True)
             return
