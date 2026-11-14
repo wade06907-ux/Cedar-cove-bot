@@ -2718,10 +2718,10 @@ async def _issue_appeal_link(bot, guild, member, punishment, audit_entry=None, m
         evidence = str(record.get("evidence") or "No evidence was attached to this moderation action.")
         punishment_word = {"mute": "muted", "ban": "banned", "kick": "kicked"}.get(punishment, punishment)
         await member.send(
-            f"You have been **{punishment_word}** in **{guild.name}**.\\n\\n"
-            f"**Reason:** {reason[:900]}\\n"
-            f"**By:** {moderator.mention} ({moderator})\\n\\n"
-            f"To appeal, please visit: {link}\\n"
+            f"You have been **{punishment_word}** in **{guild.name}**.\n\n"
+            f"**Reason:** {reason[:900]}\n"
+            f"**By:** {moderator.mention} ({moderator})\n\n"
+            f"To appeal, please visit: {link}\n"
             f"Our staff will see your appeal and follow accordingly."
         )
     except discord.Forbidden:
