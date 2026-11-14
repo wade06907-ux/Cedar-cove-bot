@@ -2836,8 +2836,9 @@ async def _finish_appeal_review(interaction, action, reason="", review_message_i
             )
             await user.send(
                 f"Your Cedar Cove appeal has been **escalated** by staff.\n"
-                (f"You have been granted the **{role.name}** role." if member else f"The **{role.name}** role will be granted when you join.") + "\n"
-                f"Join Cedar Cove here: {invite}{ticket_note}"
+                + (f"You have been granted the **{role.name}** role." if member else f"The **{role.name}** role will be granted when you join.")
+                + "\n"
+                + f"Join Cedar Cove here: {invite}{ticket_note}"
             )
         except discord.HTTPException:
             pass
