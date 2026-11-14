@@ -197,8 +197,8 @@ async def public_appeal_submit(request):
         channel = guild.get_channel(int(channel_id)) if channel_id.isdigit() else None
         embed = discord.Embed(
             title=f"New {kind.title()} Appeal",
-            description=f"**Member:** {record.get('memberName', clean['username'])} ({record['memberId']})\\n"
-                        f"**Moderator:** {record.get('moderatorName', 'Unknown')} ({record.get('moderatorId', 'Unknown')})\\n"
+            description=f"**Member:** {record.get('memberName', clean['username'])} ({record['memberId']})\n"
+                        f"**Moderator:** {record.get('moderatorName', 'Unknown')} ({record.get('moderatorId', 'Unknown')})\n"
                         f"**Original reason:** {record.get('reason', 'Not provided')}",
             color=discord.Color.blurple(),
             timestamp=datetime.now(timezone.utc),
