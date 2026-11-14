@@ -3262,6 +3262,7 @@ class MegaBot(commands.Bot):
 
 
 bot = MegaBot()
+bot.appeal_tokens_collection = cedar_cove_db["appeal_tokens"]
 bot.ticket_open_view_cls = TicketOpenView
 bot.ticket_select_view_cls = TicketSelectView
 
