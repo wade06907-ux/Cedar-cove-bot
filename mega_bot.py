@@ -10,6 +10,7 @@ import json
 import time
 import uuid
 import asyncio
+import datetime as dt
 import logging
 from typing import Optional
 
@@ -3208,12 +3209,16 @@ class MegaBot(commands.Bot):
     def __init__(self):
         super().__init__(command_prefix=commands.when_mentioned_or("!"), intents=intents)
         self._health_runner: Optional[web.AppRunner] = None
+        self._temporary_ban_task = None
 
     async def setup_hook(self):
         try:
             await self.appeal_tokens_collection.create_index("token", unique=True)
+            await self.temp_bans_collection.create_index([("active", 1), ("expiresAt", 1)])
         except Exception:
-            logger.exception("Could not initialize the appeal token index")
+            logger.exception("Could not initialize moderation indexes")
+        if not self._temporary_ban_task:
+            self._temporary_ban_task = asyncio.create_task(temporary_ban_expiry_loop(self))
 
         # Start periodic role nickname syncing only after Discord's event loop is running.
         if not getattr(self, "_role_nickname_sync_task", None):
@@ -3268,6 +3273,7 @@ class MegaBot(commands.Bot):
 
 bot = MegaBot()
 bot.appeal_tokens_collection = cedar_cove_db["appeal_tokens"]
+bot.temp_bans_collection = cedar_cove_db["temporary_bans"]
 bot.appeal_ticket_store = tickets_store
 bot.ticket_control_view_cls = TicketControlView
 bot.ticket_open_view_cls = TicketOpenView
@@ -3442,6 +3448,153 @@ async def simulate_raid_cmd(
     )
 
 bot.tree.add_command(simulate_group)
+
+
+def parse_moderation_duration(value: str, maximum_seconds: int) -> int:
+    match = re.fullmatch(r"\s*(\d+)\s*([smhd])\s*", str(value or "").lower())
+    if not match:
+        raise ValueError("Use a duration such as 30m, 2h, or 3d.")
+    amount = int(match.group(1))
+    multiplier = {"s": 1, "m": 60, "h": 3600, "d": 86400}[match.group(2)]
+    seconds = amount * multiplier
+    if seconds < 1 or seconds > maximum_seconds:
+        raise ValueError("That duration is outside the allowed range.")
+    return seconds
+
+
+async def temporary_ban_expiry_loop(client):
+    while not client.is_closed():
+        try:
+            now = int(time.time())
+            due = await client.temp_bans_collection.find(
+                {"active": True, "expiresAt": {"$lte": now}}
+            ).to_list(length=100)
+            for item in due:
+                guild = client.get_guild(int(item.get("guildId", 0)))
+                if guild is None:
+                    continue
+                try:
+                    await guild.unban(
+                        discord.Object(id=int(item["memberId"])),
+                        reason="Temporary Cedar Cove ban expired",
+                    )
+                    await client.temp_bans_collection.update_one(
+                        {"_id": item["_id"], "active": True},
+                        {"$set": {"active": False, "unbannedAt": now}},
+                    )
+                    logger.info("Expired temporary ban for %s in guild %s.", item["memberId"], guild.id)
+                except discord.NotFound:
+                    await client.temp_bans_collection.update_one(
+                        {"_id": item["_id"], "active": True},
+                        {"$set": {"active": False, "unbannedAt": now}},
+                    )
+                except discord.Forbidden:
+                    logger.warning("Cannot expire temporary ban for %s in guild %s: missing Ban Members.", item["memberId"], guild.id)
+                except discord.HTTPException:
+                    logger.exception("Could not expire temporary ban for %s in guild %s.", item["memberId"], guild.id)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Temporary ban expiry loop failed.")
+        await asyncio.sleep(30)
+
+
+moderation_group = app_commands.Group(name="moderation", description="Moderate members and manage punishments")
+
+
+@moderation_group.command(name="mute", description="Timeout a member for a chosen duration")
+@app_commands.checks.has_permissions(moderate_members=True)
+@app_commands.describe(member="Member to timeout", duration="Duration such as 10m, 2h, or 3d (maximum 28 days)", reason="Why the member is being timed out")
+async def moderation_mute(interaction: discord.Interaction, member: discord.Member, duration: str, reason: str = "No reason provided"):
+    if interaction.guild is None:
+        await interaction.response.send_message("This command only works in a server.", ephemeral=True)
+        return
+    try:
+        seconds = parse_moderation_duration(duration, 28 * 24 * 60 * 60)
+    except ValueError as exc:
+        await interaction.response.send_message(str(exc), ephemeral=True)
+        return
+    if member.id == interaction.user.id or (member.top_role >= interaction.user.top_role and interaction.guild.owner_id != interaction.user.id):
+        await interaction.response.send_message("You cannot mute that member because of their role or target.", ephemeral=True)
+        return
+    if not interaction.guild.me.guild_permissions.moderate_members:
+        await interaction.response.send_message("I need Moderate Members permission.", ephemeral=True)
+        return
+    audit_reason = f"CedarCoveModerator:{interaction.user.id} | {reason}"[:512]
+    try:
+        until = dt.datetime.now(dt.timezone.utc) + dt.timedelta(seconds=seconds)
+        await member.timeout(until, reason=audit_reason)
+        await interaction.response.send_message(f"Timed out {member.mention} for **{duration}**.", ephemeral=True)
+    except discord.Forbidden:
+        await interaction.response.send_message("I cannot timeout that member. Check my role position and Moderate Members permission.", ephemeral=True)
+    except discord.HTTPException as exc:
+        await interaction.response.send_message(f"Discord could not apply the timeout: {exc}", ephemeral=True)
+
+
+@moderation_group.command(name="ban", description="Ban a member permanently or for a set duration")
+@app_commands.checks.has_permissions(ban_members=True)
+@app_commands.describe(member="Member to ban", duration="Use permanent or a duration such as 1d or 7d", reason="Why the member is being banned")
+async def moderation_ban(interaction: discord.Interaction, member: discord.Member, duration: str = "permanent", reason: str = "No reason provided"):
+    if interaction.guild is None:
+        await interaction.response.send_message("This command only works in a server.", ephemeral=True)
+        return
+    temporary_seconds = None
+    if duration.strip().lower() != "permanent":
+        try:
+            temporary_seconds = parse_moderation_duration(duration, 365 * 24 * 60 * 60)
+        except ValueError as exc:
+            await interaction.response.send_message("Use permanent or a duration such as 1d or 7d. " + str(exc), ephemeral=True)
+            return
+    if member.id == interaction.user.id or (member.top_role >= interaction.user.top_role and interaction.guild.owner_id != interaction.user.id):
+        await interaction.response.send_message("You cannot ban that member because of their role or target.", ephemeral=True)
+        return
+    if not interaction.guild.me.guild_permissions.ban_members:
+        await interaction.response.send_message("I need Ban Members permission.", ephemeral=True)
+        return
+    audit_reason = f"CedarCoveModerator:{interaction.user.id} | {reason}"[:512]
+    try:
+        await interaction.guild.ban(member, reason=audit_reason, delete_message_seconds=0)
+        if temporary_seconds:
+            expires = int(time.time()) + temporary_seconds
+            await interaction.client.temp_bans_collection.update_one(
+                {"guildId": str(interaction.guild.id), "memberId": str(member.id)},
+                {"$set": {"guildId": str(interaction.guild.id), "memberId": str(member.id), "expiresAt": expires, "active": True, "issuedBy": str(interaction.user.id)}},
+                upsert=True,
+            )
+        await interaction.response.send_message(
+            f"Banned **{member}**" + (f" for **{duration}**." if temporary_seconds else " permanently."),
+            ephemeral=True,
+        )
+    except discord.Forbidden:
+        await interaction.response.send_message("I cannot ban that member. Check my role position and Ban Members permission.", ephemeral=True)
+    except discord.HTTPException as exc:
+        await interaction.response.send_message(f"Discord could not apply the ban: {exc}", ephemeral=True)
+
+
+@moderation_group.command(name="kick", description="Kick a member from the server")
+@app_commands.checks.has_permissions(kick_members=True)
+@app_commands.describe(member="Member to kick", reason="Why the member is being kicked")
+async def moderation_kick(interaction: discord.Interaction, member: discord.Member, reason: str = "No reason provided"):
+    if interaction.guild is None:
+        await interaction.response.send_message("This command only works in a server.", ephemeral=True)
+        return
+    if member.id == interaction.user.id or (member.top_role >= interaction.user.top_role and interaction.guild.owner_id != interaction.user.id):
+        await interaction.response.send_message("You cannot kick that member because of their role or target.", ephemeral=True)
+        return
+    if not interaction.guild.me.guild_permissions.kick_members:
+        await interaction.response.send_message("I need Kick Members permission.", ephemeral=True)
+        return
+    audit_reason = f"CedarCoveModerator:{interaction.user.id} | {reason}"[:512]
+    try:
+        await interaction.guild.kick(member, reason=audit_reason)
+        await interaction.response.send_message(f"Kicked **{member}** from the server.", ephemeral=True)
+    except discord.Forbidden:
+        await interaction.response.send_message("I cannot kick that member. Check my role position and Kick Members permission.", ephemeral=True)
+    except discord.HTTPException as exc:
+        await interaction.response.send_message(f"Discord could not apply the kick: {exc}", ephemeral=True)
+
+
+bot.tree.add_command(moderation_group)
 
 
 @bot.event
