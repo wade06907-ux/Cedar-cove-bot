@@ -2635,7 +2635,7 @@ async def _issue_appeal_link(bot, guild, member, punishment, audit_entry):
         await collection.insert_one(record)
         base_url = (os.getenv("APPEALS_BASE_URL") or "https://cedar-cove-appeals.onrender.com").rstrip("/")
         link = f"{base_url}/{punishment}.html#token={token}"
-        evidence = "No evidence was attached to this moderation action."
+        evidence = str(record.get("evidence") or "No evidence was attached to this moderation action.")
         await member.send(
             f"You have been **{punishment.upper()}** in **{guild.name}**.\\n\\n"
             f"**Reason**\\n{reason[:900]}\\n\\n"
@@ -2831,8 +2831,9 @@ async def _finish_appeal_review(interaction, action, reason="", review_message_i
             user = bot.get_user(int(record["memberId"])) or await bot.fetch_user(int(record["memberId"]))
             ticket_note = f"\nYour appeal ticket is ready: {ticket.mention}" if ticket else (
                 f"\nAfter joining, your appeal ticket will be created automatically. "
-                f"Ticket information: <#{settings.get('ticketPanelChannelId')}>" if settings.get("ticketPanelChannelId") else
-                "\nYour appeal ticket will be created automatically after you join."
+                f"Ticket information: <#{settings.get('ticketPanelChannelId')}>" if not member and settings.get("ticketPanelChannelId") else
+                "\nYour appeal ticket will be created automatically after you join." if not member else
+                "\nStaff could not create the ticket automatically. Please contact the Cedar Cove staff team."
             )
             await user.send(
                 f"Your Cedar Cove appeal has been **escalated** by staff.\n"
