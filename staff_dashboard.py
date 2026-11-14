@@ -348,21 +348,25 @@ def setup_staff(bot, get_store, logger):
             await interaction.response.send_message(f"{user.display_name} was warned. Reason: {reason[:500]}", ephemeral=True)
 
         @moderation_group.command(name="mute", description="Timeout a member for a chosen duration.")
-        @discord.app_commands.describe(user="Member to timeout", minutes="Timeout length in minutes (1-40320)", reason="Reason for the mute")
-        async def mute_staff_command(interaction: discord.Interaction, user: discord.Member, minutes: discord.app_commands.Range[int, 1, 40320] = 60, reason: str = "No reason provided"):
+        @discord.app_commands.describe(user="Member to timeout", duration="Use a duration such as 30m, 2h, or 7d (maximum 28d)", reason="Reason for the mute")
+        async def mute_staff_command(interaction: discord.Interaction, user: discord.Member, duration: str = "1h", reason: str = "No reason provided"):
             if not interaction.guild or not interaction.user.guild_permissions.moderate_members:
                 return await interaction.response.send_message("You need Moderate Members permission.", ephemeral=True)
             if user.bot or user.id == interaction.user.id:
                 return await interaction.response.send_message("Choose another human member.", ephemeral=True)
             if not interaction.guild.me or interaction.guild.me.top_role <= user.top_role:
                 return await interaction.response.send_message("The bot's highest role must be above the target member.", ephemeral=True)
+            try:
+                duration_seconds = _parse_moderation_duration(duration, 28 * 86400)
+            except ValueError as exc:
+                return await interaction.response.send_message("Use a duration such as 30m, 2h, or 7d. " + str(exc), ephemeral=True)
             await interaction.response.defer(ephemeral=True, thinking=True)
             try:
-                await user.timeout(datetime.now(timezone.utc) + timedelta(minutes=int(minutes)), reason=f"CedarCoveModerator:{interaction.user.id} | {reason[:450]}")
+                await user.timeout(datetime.now(timezone.utc) + timedelta(seconds=duration_seconds), reason=f"CedarCoveModerator:{interaction.user.id} | {reason[:450]}")
             except (discord.Forbidden, discord.HTTPException):
                 return await interaction.followup.send("Discord could not timeout that member. Check permissions and role hierarchy.", ephemeral=True)
             await _safe_issue_appeal_link(bot, interaction.guild, user, "mute", interaction.user, reason)
-            await interaction.followup.send(f"{user.display_name} was muted for {minutes} minute(s). Reason: {reason[:500]}", ephemeral=True)
+            await interaction.followup.send(f"{user.display_name} was muted for {duration}. Reason: {reason[:500]}", ephemeral=True)
 
         @moderation_group.command(name="unmute", description="Remove a timeout from a member.")
         @discord.app_commands.describe(user="Member to unmute", reason="Reason for removing the mute")
