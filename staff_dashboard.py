@@ -2648,6 +2648,244 @@ async def _issue_appeal_link(bot, guild, member, punishment, audit_entry):
             logger.exception("Failed to issue %s appeal link for member %s.", punishment, member.id)
 
 
+
+
+async def _appeal_ticket_for_member(bot, guild, member, appeal_record):
+    config = await bot.staff_dashboard_store.get(str(guild.id), {})
+    settings = ((config.get("modules") or {}).get("appeals") or {})
+    category_id = str(settings.get("ticketCategoryId") or "")
+    category = guild.get_channel(int(category_id)) if category_id.isdigit() else None
+    role_ids_raw = settings.get("ticketSupportRoleIdsJson") or "[]"
+    try:
+        role_ids = json.loads(role_ids_raw) if isinstance(role_ids_raw, str) else role_ids_raw
+    except (TypeError, ValueError):
+        role_ids = []
+    roles = [guild.get_role(int(value)) for value in role_ids if str(value).isdigit()]
+    roles = [role for role in roles if role]
+    existing_key, existing = await bot.appeal_ticket_store.find_one(
+        lambda key, value: value.get("guild_id") == guild.id
+        and value.get("opener_id") == member.id and value.get("status") == "open"
+        and value.get("appeal_token") == appeal_record.get("token")
+    )
+    if existing:
+        return guild.get_channel(int(existing_key))
+    if not guild.me or not guild.me.guild_permissions.manage_channels:
+        raise RuntimeError("The bot needs Manage Channels to create appeal tickets.")
+    if category_id and not isinstance(category, discord.CategoryChannel):
+        raise RuntimeError("The configured appeal ticket category is no longer available.")
+    overwrites = {
+        guild.default_role: discord.PermissionOverwrite(view_channel=False),
+        member: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True),
+        guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_channels=True),
+    }
+    for role in roles:
+        overwrites[role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
+    number = int(time.time()) % 100000
+    name_format = str(settings.get("ticketChannelNameFormat") or "appeal-{username}")[:80]
+    channel_name = name_format.replace("{username}", re.sub(r"[^a-z0-9-]", "-", member.name.lower())[:35]).replace("{number}", f"{number:05d}")
+    channel_name = re.sub(r"[^a-zA-Z0-9_-]", "-", channel_name).strip("-_")[:90] or f"appeal-{number:05d}"
+    channel = await guild.create_text_channel(
+        channel_name, category=category if isinstance(category, discord.CategoryChannel) else None,
+        overwrites=overwrites, reason=f"Appeal escalation for {member} ({appeal_record.get('punishment')})"
+    )
+    welcome = str(settings.get("ticketWelcomeMessage") or "Welcome {user}. Staff will review your appeal here.")
+    welcome = welcome.replace("{user}", member.display_name).replace("{mention}", member.mention).replace("{server}", guild.name).replace("{type}", "Appeal")
+    content = f"🎫 **Appeal escalation — {guild.name}**\n\n{welcome}\n\n**Original punishment:** {appeal_record.get('punishment', 'Unknown').title()}\n**Original reason:** {appeal_record.get('reason') or 'Not provided'}"
+    support_mentions = " ".join(role.mention for role in roles)
+    view_class = getattr(bot, "ticket_control_view_cls", None)
+    message = await channel.send(
+        content=((support_mentions + "\n") if support_mentions else "") + content,
+        view=view_class() if view_class else None,
+        allowed_mentions=discord.AllowedMentions(roles=True, users=False, everyone=False)
+    )
+    await bot.appeal_ticket_store.set(channel.id, {
+        "guild_id": guild.id, "opener_id": member.id, "claimed_by": None, "status": "open",
+        "panel_message_id": None, "option_label": "Appeal", "role_id": roles[0].id if roles else None,
+        "role_ids": [role.id for role in roles], "message_id": message.id, "number": number,
+        "appeal_token": appeal_record.get("token")
+    })
+    return channel
+
+
+async def _appeal_server_invite(guild, settings):
+    preferred = str(settings.get("ticketPanelChannelId") or "")
+    channel = guild.get_channel(int(preferred)) if preferred.isdigit() else None
+    if not isinstance(channel, discord.TextChannel):
+        channel = guild.system_channel
+    if not isinstance(channel, discord.TextChannel):
+        channel = next((item for item in guild.text_channels if item.permissions_for(guild.me).create_instant_invite), None)
+    if isinstance(channel, discord.TextChannel):
+        try:
+            invite = await channel.create_invite(max_age=86400, max_uses=1, unique=True, reason="Appeal escalation invite")
+            return invite.url
+        except discord.HTTPException:
+            pass
+    return guild.vanity_url or "No server invite could be created. Please contact Cedar Cove staff."
+
+
+async def _appeal_escalation_join(member):
+    bot = member.guild._state._get_client()
+    collection = getattr(bot, "appeal_tokens_collection", None)
+    if collection is None:
+        return
+    record = await collection.find_one({
+        "guildId": str(member.guild.id), "memberId": str(member.id),
+        "pendingEscalation": True, "status": "escalated"
+    }, {"_id": 0})
+    if not record:
+        return
+    config = await bot.staff_dashboard_store.get(str(member.guild.id), {})
+    settings = ((config.get("modules") or {}).get("appeals") or {})
+    role_id = str(record.get("escalationRoleId") or settings.get("escalationRoleId") or "")
+    role = member.guild.get_role(int(role_id)) if role_id.isdigit() else None
+    if role and member.guild.me and member.guild.me.guild_permissions.manage_roles and role < member.guild.me.top_role:
+        try:
+            await member.add_roles(role, reason="Appeal escalated by Cedar Cove staff")
+        except discord.HTTPException:
+            pass
+    try:
+        ticket = await _appeal_ticket_for_member(bot, member.guild, member, record)
+        await collection.update_one({"token": record["token"]}, {"$set": {
+            "pendingEscalation": False, "escalatedAt": int(time.time()),
+            "appealTicketChannelId": str(ticket.id) if ticket else None
+        }})
+        if ticket:
+            await member.send(f"Your appeal has been escalated. Your appeal ticket is ready: {ticket.mention}")
+    except Exception:
+        logger = getattr(bot, "staff_dashboard_logger", None)
+        if logger:
+            logger.exception("Could not complete appeal escalation for member %s.", member.id)
+
+
+async def _finish_appeal_review(interaction, action, reason=""):
+    bot = interaction.client
+    collection = bot.appeal_tokens_collection
+    record = await collection.find_one({"reviewMessageId": str(interaction.message.id)}, {"_id": 0})
+    if not record:
+        await interaction.followup.send("This appeal record could not be found.", ephemeral=True)
+        return
+    if record.get("status") not in {"pending", None, ""}:
+        await interaction.followup.send(f"This appeal has already been {record.get('status')}.", ephemeral=True)
+        return
+    guild = bot.get_guild(int(record["guildId"])) if str(record.get("guildId", "")).isdigit() else None
+    if action == "escalated":
+        if not guild:
+            await interaction.followup.send("The original server is unavailable.", ephemeral=True)
+            return
+        config = await bot.staff_dashboard_store.get(str(guild.id), {})
+        settings = ((config.get("modules") or {}).get("appeals") or {})
+        role_id = str(settings.get("escalationRoleId") or "")
+        role = guild.get_role(int(role_id)) if role_id.isdigit() else None
+        if not role:
+            await interaction.followup.send("Set an escalation role in Moderation → Appeals before using this action.", ephemeral=True)
+            return
+        member = guild.get_member(int(record["memberId"]))
+        if member and (not guild.me or not guild.me.guild_permissions.manage_roles or role >= guild.me.top_role):
+            await interaction.followup.send("I cannot assign the escalation role. Check Manage Roles and role hierarchy.", ephemeral=True)
+            return
+        await collection.update_one({"token": record["token"], "status": {"$in": ["pending", None, ""]}}, {"$set": {
+            "status": "escalated", "pendingEscalation": member is None,
+            "escalationRoleId": str(role.id), "reviewedBy": str(interaction.user.id),
+            "reviewedByName": str(interaction.user), "reviewedAt": int(time.time())
+        }})
+        invite = await _appeal_server_invite(guild, settings)
+        ticket = None
+        if member:
+            try:
+                await member.add_roles(role, reason=f"Appeal escalated by {interaction.user}")
+                ticket = await _appeal_ticket_for_member(bot, guild, member, record)
+                await collection.update_one({"token": record["token"]}, {"$set": {
+                    "pendingEscalation": False, "escalatedAt": int(time.time()),
+                    "appealTicketChannelId": str(ticket.id) if ticket else None
+                }})
+            except Exception:
+                logger = getattr(bot, "staff_dashboard_logger", None)
+                if logger:
+                    logger.exception("Appeal escalation could not finish for %s.", record.get("memberId"))
+        try:
+            user = bot.get_user(int(record["memberId"])) or await bot.fetch_user(int(record["memberId"]))
+            ticket_note = f"\nYour appeal ticket is ready: {ticket.mention}" if ticket else (
+                f"\nAfter joining, your appeal ticket will be created automatically. "
+                f"Ticket information: <#{settings.get('ticketPanelChannelId')}>" if settings.get("ticketPanelChannelId") else
+                "\nYour appeal ticket will be created automatically after you join."
+            )
+            await user.send(
+                f"Your Cedar Cove appeal has been **escalated** by staff.\n"
+                f"You have been granted the **{role.name}** role when you join the server.\n"
+                f"Join Cedar Cove here: {invite}{ticket_note}"
+            )
+        except discord.HTTPException:
+            pass
+        await interaction.followup.send("Appeal escalated. The member was sent the server invite and ticket information.", ephemeral=True)
+        return
+    new_status = "accepted" if action == "accepted" else "denied"
+    result = await collection.update_one(
+        {"token": record["token"], "status": {"$in": ["pending", None, ""]}},
+        {"$set": {"status": new_status, "decisionReason": reason[:1000],
+                  "reviewedBy": str(interaction.user.id), "reviewedByName": str(interaction.user),
+                  "reviewedAt": int(time.time())}}
+    )
+    if not result.matched_count:
+        await interaction.followup.send("This appeal has already been reviewed.", ephemeral=True)
+        return
+    try:
+        user = bot.get_user(int(record["memberId"])) or await bot.fetch_user(int(record["memberId"]))
+        message = "Your Cedar Cove appeal has been **accepted**." if action == "accepted" else "Your Cedar Cove appeal has been **denied**."
+        if reason:
+            message += f"\n\n**Staff response:** {reason}"
+        await user.send(message)
+    except discord.HTTPException:
+        pass
+    await interaction.followup.send(f"Appeal {new_status}. The member was notified if their DMs allow it.", ephemeral=True)
+
+
+class AppealDecisionReasonModal(discord.ui.Modal):
+    def __init__(self, action, message_id):
+        super().__init__(title="Appeal decision reason")
+        self.action = action
+        self.message_id = str(message_id)
+        self.reason = discord.ui.TextInput(label="Reason for this decision", style=discord.TextStyle.paragraph, min_length=1, max_length=1000)
+        self.add_item(self.reason)
+
+    async def on_submit(self, interaction):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        interaction.message = await interaction.channel.fetch_message(int(self.message_id))
+        await _finish_appeal_review(interaction, self.action, str(self.reason.value).strip())
+
+
+class AppealReviewView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    async def interaction_check(self, interaction):
+        if not (interaction.user.guild_permissions.administrator or interaction.user.guild_permissions.manage_messages or interaction.user.guild_permissions.manage_guild):
+            await interaction.response.send_message("You need staff moderation permissions to review appeals.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="Accept", style=discord.ButtonStyle.success, custom_id="cedarcove:appeal:accept", row=0)
+    async def accept(self, interaction, button):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        await _finish_appeal_review(interaction, "accepted")
+
+    @discord.ui.button(label="Accept with reason", style=discord.ButtonStyle.success, custom_id="cedarcove:appeal:accept_reason", row=0)
+    async def accept_reason(self, interaction, button):
+        await interaction.response.send_modal(AppealDecisionReasonModal("accepted", interaction.message.id))
+
+    @discord.ui.button(label="Deny", style=discord.ButtonStyle.danger, custom_id="cedarcove:appeal:deny", row=1)
+    async def deny(self, interaction, button):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        await _finish_appeal_review(interaction, "denied")
+
+    @discord.ui.button(label="Deny with reason", style=discord.ButtonStyle.danger, custom_id="cedarcove:appeal:deny_reason", row=1)
+    async def deny_reason(self, interaction, button):
+        await interaction.response.send_modal(AppealDecisionReasonModal("denied", interaction.message.id))
+
+    @discord.ui.button(label="Escalate", style=discord.ButtonStyle.primary, custom_id="cedarcove:appeal:escalate", row=2)
+    async def escalate(self, interaction, button):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        await _finish_appeal_review(interaction, "escalated")
+
 async def _appeal_member_ban(guild, user):
     entry = await _appeal_audit_entry(guild, discord.AuditLogAction.ban, user.id)
     if entry:
