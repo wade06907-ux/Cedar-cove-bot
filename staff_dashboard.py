@@ -2605,7 +2605,7 @@ async def _issue_appeal_link(bot, guild, member, punishment, audit_entry):
     match = re.search(r"CedarCoveModerator:(\d+)", reason)
     if match:
         moderator = guild.get_member(int(match.group(1))) or moderator
-        reason = re.sub(r"CedarCoveModerator:\d+\s*\\|\s*", "", reason, count=1)
+        reason = re.sub(r"CedarCoveModerator:\d+\s*\|\s*", "", reason, count=1)
     if moderator is None:
         return
     token = secrets.token_urlsafe(32)
