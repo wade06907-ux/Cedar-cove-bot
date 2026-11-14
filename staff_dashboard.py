@@ -2601,6 +2601,10 @@ async def _issue_appeal_link(bot, guild, member, punishment, audit_entry):
     collection = getattr(bot, "appeal_tokens_collection", None)
     if collection is None or getattr(member, "bot", False):
         return
+    config = await bot.staff_dashboard_store.get(str(guild.id), {})
+    appeal_settings = ((config.get("modules") or {}).get("appeals") or {})
+    if appeal_settings.get("enabled") is False:
+        return
     reason = str(getattr(audit_entry, "reason", None) or "No reason provided")
     moderator = getattr(audit_entry, "user", None)
     match = re.search(r"CedarCoveModerator:(\d+)", reason)
@@ -2621,6 +2625,7 @@ async def _issue_appeal_link(bot, guild, member, punishment, audit_entry):
         "moderatorId": str(moderator.id),
         "moderatorName": str(moderator),
         "reason": reason[:500],
+        "evidence": "No evidence was attached to this moderation action.",
         "createdAt": now,
         "expiresAt": now + 30 * 24 * 60 * 60,
         "usedAt": None,
@@ -2782,6 +2787,17 @@ async def _finish_appeal_review(interaction, action, reason="", review_message_i
             await interaction.followup.send("Set an escalation role in Moderation → Appeals before using this action.", ephemeral=True)
             return
         member = guild.get_member(int(record["memberId"]))
+        if record.get("punishment") == "ban":
+            if not guild.me or not guild.me.guild_permissions.ban_members:
+                await interaction.followup.send("I need Ban Members permission to let a banned member rejoin after escalation.", ephemeral=True)
+                return
+            try:
+                await guild.unban(discord.Object(id=int(record["memberId"])), reason=f"Appeal escalated by {interaction.user}")
+            except discord.NotFound:
+                pass
+            except discord.HTTPException:
+                await interaction.followup.send("I could not lift the ban. Check my Ban Members permission and try again.", ephemeral=True)
+                return
         if member and (not guild.me or not guild.me.guild_permissions.manage_roles or role >= guild.me.top_role):
             await interaction.followup.send("I cannot assign the escalation role. Check Manage Roles and role hierarchy.", ephemeral=True)
             return
@@ -2813,7 +2829,7 @@ async def _finish_appeal_review(interaction, action, reason="", review_message_i
             )
             await user.send(
                 f"Your Cedar Cove appeal has been **escalated** by staff.\n"
-                f"You have been granted the **{role.name}** role when you join the server.\n"
+                (f"You have been granted the **{role.name}** role." if member else f"The **{role.name}** role will be granted when you join.") + "\n"
                 f"Join Cedar Cove here: {invite}{ticket_note}"
             )
         except discord.HTTPException:
