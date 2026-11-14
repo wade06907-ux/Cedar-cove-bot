@@ -109,7 +109,7 @@ def setup_staff(bot, get_store, logger):
             return any(re.sub(r"[^a-z0-9]+", " ", role.name.casefold()).strip() in allowed for role in interaction.user.roles)
 
         def _parse_moderation_duration(value, maximum_seconds):
-            match = re.fullmatch(r"\\s*(\\d+)\\s*([smhd])\\s*", str(value or "").lower())
+            match = re.fullmatch(r"\s*(\d+)\s*([smhd])\s*", str(value or "").lower())
             if not match:
                 raise ValueError("Use a duration such as 30m, 2h, or 3d.")
             amount = int(match.group(1))
