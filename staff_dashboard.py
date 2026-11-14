@@ -407,6 +407,7 @@ def setup_staff(bot, get_store, logger):
         (_appeal_member_ban, "on_member_ban", "_appeal_ban_listener_added"),
         (_appeal_member_remove, "on_member_remove", "_appeal_kick_listener_added"),
         (_appeal_member_update, "on_member_update", "_appeal_timeout_listener_added"),
+        (_appeal_escalation_join, "on_member_join", "_appeal_escalation_join_listener_added"),
     ):
         if not getattr(bot, marker, False):
             bot.add_listener(listener, event_name)
@@ -2757,10 +2758,11 @@ async def _appeal_escalation_join(member):
             logger.exception("Could not complete appeal escalation for member %s.", member.id)
 
 
-async def _finish_appeal_review(interaction, action, reason=""):
+async def _finish_appeal_review(interaction, action, reason="", review_message_id=None):
     bot = interaction.client
     collection = bot.appeal_tokens_collection
-    record = await collection.find_one({"reviewMessageId": str(interaction.message.id)}, {"_id": 0})
+    message_id = review_message_id or (interaction.message.id if interaction.message else None)
+    record = await collection.find_one({"reviewMessageId": str(message_id)}, {"_id": 0})
     if not record:
         await interaction.followup.send("This appeal record could not be found.", ephemeral=True)
         return
@@ -2849,8 +2851,7 @@ class AppealDecisionReasonModal(discord.ui.Modal):
 
     async def on_submit(self, interaction):
         await interaction.response.defer(ephemeral=True, thinking=True)
-        interaction.message = await interaction.channel.fetch_message(int(self.message_id))
-        await _finish_appeal_review(interaction, self.action, str(self.reason.value).strip())
+        await _finish_appeal_review(interaction, self.action, str(self.reason.value).strip(), self.message_id)
 
 
 class AppealReviewView(discord.ui.View):
@@ -2961,7 +2962,7 @@ async def public_appeal_submit(request):
     claim = await collection.update_one(
         {"token": token, "punishment": kind, "memberId": clean["userId"],
          "usedAt": None, "expiresAt": {"$gt": now}},
-        {"$set": {"usedAt": now, "submittedAt": now, "answers": clean}}
+        {"$set": {"usedAt": now, "submittedAt": now, "answers": clean, "status": "pending"}}
     )
     if not claim.matched_count:
         return _json(request, {"error": "This appeal link is invalid, expired, or has already been used."}, 410)
@@ -2971,11 +2972,14 @@ async def public_appeal_submit(request):
     delivered = False
     if guild:
         config = await bot.staff_dashboard_store.get(str(guild.id), {})
-        logging_config = ((config.get("modules") or {}).get("logging") or {})
+        modules = config.get("modules") or {}
+        appeals = modules.get("appeals") if isinstance(modules.get("appeals"), dict) else {}
+        logging_config = modules.get("logging") if isinstance(modules.get("logging"), dict) else {}
         events = logging_config.get("events") if isinstance(logging_config.get("events"), dict) else {}
         event_config = events.get("moderationActions") if isinstance(events.get("moderationActions"), dict) else {}
         channel_id = str(
-            event_config.get("channelId")
+            appeals.get("reviewChannelId")
+            or event_config.get("channelId")
             or logging_config.get("moderationActionsChannelId")
             or logging_config.get("channelId")
             or logging_config.get("logChannelId")
@@ -2984,9 +2988,11 @@ async def public_appeal_submit(request):
         channel = guild.get_channel(int(channel_id)) if channel_id.isdigit() else None
         embed = discord.Embed(
             title=f"New {kind.title()} Appeal",
-            description=f"**Member:** {record.get('memberName', clean['username'])} ({record['memberId']})\\n"
-                        f"**Moderator:** {record.get('moderatorName', 'Unknown')} ({record.get('moderatorId', 'Unknown')})\\n"
-                        f"**Original reason:** {record.get('reason', 'Not provided')}",
+            description=(
+                f"**Member:** {record.get('memberName', clean['username'])} ({record['memberId']})\n"
+                f"**Moderator:** {record.get('moderatorName', 'Unknown')} ({record.get('moderatorId', 'Unknown')})\n"
+                f"**Original reason:** {record.get('reason', 'Not provided')}"
+            ),
             color=discord.Color.blurple(),
             timestamp=datetime.now(timezone.utc),
         )
@@ -2994,17 +3000,19 @@ async def public_appeal_submit(request):
                            ("appeal", "Why should this be reconsidered?"), ("change", "What will change?")):
             if clean.get(key):
                 embed.add_field(name=title, value=clean[key][:1024], inline=False)
-        embed.set_footer(text=f"Appeal token: {token[:10]}…")
+        embed.set_footer(text=f"Punishment: {kind.title()} • Token: {token[:10]}…")
         try:
             if isinstance(channel, (discord.TextChannel, discord.Thread)):
-                await channel.send(embed=embed)
+                review_message = await channel.send(embed=embed, view=AppealReviewView())
+                await collection.update_one({"token": token}, {"$set": {"reviewMessageId": str(review_message.id), "reviewChannelId": str(channel.id)}})
                 delivered = True
             elif guild.owner:
-                await guild.owner.send(embed=embed)
+                await guild.owner.send(embed=embed, view=AppealReviewView())
                 delivered = True
         except discord.HTTPException:
             pass
     return _json(request, {"ok": True, "delivered": delivered}, 201)
+
 
 def register_staff_routes(app: web.Application):
     app["staff_logger"] = __import__("logging").getLogger("mega_bot.staff_dashboard")
@@ -3026,6 +3034,9 @@ def register_staff_routes(app: web.Application):
         # register_staff_routes is invoked after setup_staff in mega_bot.py.
         bot = _configured_bot
     app["staff_bot"] = bot
+    if not getattr(bot, "_appeal_review_view_added", False):
+        bot.add_view(AppealReviewView())
+        bot._appeal_review_view_added = True
     app["staff_store"] = bot.staff_dashboard_store
     app["audit_store"] = bot.staff_dashboard_audit_store
     app["panels_store"] = bot.staff_dashboard_store_for_panels
