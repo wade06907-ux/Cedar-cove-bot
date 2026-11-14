@@ -2787,8 +2787,11 @@ async def _finish_appeal_review(interaction, action, reason="", review_message_i
             await interaction.followup.send("Set an escalation role in Moderation → Appeals before using this action.", ephemeral=True)
             return
         member = guild.get_member(int(record["memberId"]))
+        if not guild.me or not guild.me.guild_permissions.manage_roles or role >= guild.me.top_role:
+            await interaction.followup.send("I cannot assign the escalation role. Check Manage Roles and role hierarchy.", ephemeral=True)
+            return
         if record.get("punishment") == "ban":
-            if not guild.me or not guild.me.guild_permissions.ban_members:
+            if not guild.me.guild_permissions.ban_members:
                 await interaction.followup.send("I need Ban Members permission to let a banned member rejoin after escalation.", ephemeral=True)
                 return
             try:
@@ -2798,9 +2801,6 @@ async def _finish_appeal_review(interaction, action, reason="", review_message_i
             except discord.HTTPException:
                 await interaction.followup.send("I could not lift the ban. Check my Ban Members permission and try again.", ephemeral=True)
                 return
-        if member and (not guild.me or not guild.me.guild_permissions.manage_roles or role >= guild.me.top_role):
-            await interaction.followup.send("I cannot assign the escalation role. Check Manage Roles and role hierarchy.", ephemeral=True)
-            return
         await collection.update_one({"token": record["token"], "status": {"$in": ["pending", None, ""]}}, {"$set": {
             "status": "escalated", "pendingEscalation": member is None,
             "escalationRoleId": str(role.id), "reviewedBy": str(interaction.user.id),
@@ -3022,6 +3022,7 @@ async def public_appeal_submit(request):
             color=discord.Color.blurple(),
             timestamp=datetime.now(timezone.utc),
         )
+        embed.add_field(name="Evidence", value=str(record.get("evidence") or "Not provided")[:1024], inline=False)
         for key, title in (("username", "Discord username"), ("reason", "What happened"),
                            ("appeal", "Why should this be reconsidered?"), ("change", "What will change?")):
             if clean.get(key):
