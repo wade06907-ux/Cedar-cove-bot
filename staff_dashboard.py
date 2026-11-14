@@ -287,6 +287,7 @@ def setup_staff(bot, get_store, logger):
                     temporary_seconds = _parse_moderation_duration(duration, 365 * 86400)
                 except ValueError as exc:
                     return await interaction.response.send_message("Use permanent or a duration such as 1d or 7d. " + str(exc), ephemeral=True)
+            await interaction.response.defer(ephemeral=True, thinking=True)
             try:
                 await user.ban(reason=f"CedarCoveModerator:{interaction.user.id} | {reason[:450]}", delete_message_seconds=0)
                 collection = getattr(bot, "temp_bans_collection", None)
@@ -307,10 +308,10 @@ def setup_staff(bot, get_store, logger):
                 elif temporary_seconds:
                     logger.warning("Temporary ban storage is unavailable for guild %s.", interaction.guild.id)
             except (discord.Forbidden, discord.HTTPException):
-                return await interaction.response.send_message("Discord could not ban that member. Check permissions and role hierarchy.", ephemeral=True)
+                return await interaction.followup.send("Discord could not ban that member. Check permissions and role hierarchy.", ephemeral=True)
             label = f"for {duration}" if temporary_seconds else "permanently"
-            await _issue_appeal_link(bot, interaction.guild, user, "ban", moderator=interaction.user, reason_override=reason)
-            await interaction.response.send_message(f"{user.display_name} was banned {label}. Reason: {reason[:500]}", ephemeral=True)
+            await _safe_issue_appeal_link(bot, interaction.guild, user, "ban", interaction.user, reason)
+            await interaction.followup.send(f"{user.display_name} was banned {label}. Reason: {reason[:500]}", ephemeral=True)
 
         @moderation_group.command(name="kick", description="Kick a member from this server.")
         @discord.app_commands.describe(user="Member to kick", reason="Reason for the kick")
@@ -321,12 +322,13 @@ def setup_staff(bot, get_store, logger):
                 return await interaction.response.send_message("You cannot kick yourself or the server owner.", ephemeral=True)
             if not interaction.guild.me or interaction.guild.me.top_role <= user.top_role:
                 return await interaction.response.send_message("The bot's highest role must be above the target member.", ephemeral=True)
+            await interaction.response.defer(ephemeral=True, thinking=True)
             try:
                 await user.kick(reason=f"CedarCoveModerator:{interaction.user.id} | {reason[:450]}")
             except (discord.Forbidden, discord.HTTPException):
-                return await interaction.response.send_message("Discord could not kick that member. Check permissions and role hierarchy.", ephemeral=True)
-            await _issue_appeal_link(bot, interaction.guild, user, "kick", moderator=interaction.user, reason_override=reason)
-            await interaction.response.send_message(f"{user.display_name} was kicked. Reason: {reason[:500]}", ephemeral=True)
+                return await interaction.followup.send("Discord could not kick that member. Check permissions and role hierarchy.", ephemeral=True)
+            await _safe_issue_appeal_link(bot, interaction.guild, user, "kick", interaction.user, reason)
+            await interaction.followup.send(f"{user.display_name} was kicked. Reason: {reason[:500]}", ephemeral=True)
 
         @moderation_group.command(name="warn", description="Warn a non-staff server member.")
         @discord.app_commands.describe(user="Non-staff member to warn", reason="Reason for the warning")
@@ -354,12 +356,13 @@ def setup_staff(bot, get_store, logger):
                 return await interaction.response.send_message("Choose another human member.", ephemeral=True)
             if not interaction.guild.me or interaction.guild.me.top_role <= user.top_role:
                 return await interaction.response.send_message("The bot's highest role must be above the target member.", ephemeral=True)
+            await interaction.response.defer(ephemeral=True, thinking=True)
             try:
                 await user.timeout(datetime.now(timezone.utc) + timedelta(minutes=int(minutes)), reason=f"CedarCoveModerator:{interaction.user.id} | {reason[:450]}")
             except (discord.Forbidden, discord.HTTPException):
-                return await interaction.response.send_message("Discord could not timeout that member. Check permissions and role hierarchy.", ephemeral=True)
-            await _issue_appeal_link(bot, interaction.guild, user, "mute", moderator=interaction.user, reason_override=reason)
-            await interaction.response.send_message(f"{user.display_name} was muted for {minutes} minute(s). Reason: {reason[:500]}", ephemeral=True)
+                return await interaction.followup.send("Discord could not timeout that member. Check permissions and role hierarchy.", ephemeral=True)
+            await _safe_issue_appeal_link(bot, interaction.guild, user, "mute", interaction.user, reason)
+            await interaction.followup.send(f"{user.display_name} was muted for {minutes} minute(s). Reason: {reason[:500]}", ephemeral=True)
 
         @moderation_group.command(name="unmute", description="Remove a timeout from a member.")
         @discord.app_commands.describe(user="Member to unmute", reason="Reason for removing the mute")
@@ -2729,6 +2732,15 @@ async def _issue_appeal_link(bot, guild, member, punishment, audit_entry=None, m
             logger.exception("Failed to issue %s appeal link for member %s.", punishment, member.id)
 
 
+
+
+async def _safe_issue_appeal_link(bot, guild, member, punishment, moderator, reason):
+    try:
+        await _issue_appeal_link(bot, guild, member, punishment, moderator=moderator, reason_override=reason)
+    except Exception:
+        logger = getattr(bot, "staff_dashboard_logger", None)
+        if logger:
+            logger.exception("Could not complete %s appeal setup for member %s in guild %s.", punishment, member.id, guild.id)
 
 
 async def _appeal_ticket_for_member(bot, guild, member, appeal_record):
