@@ -2637,11 +2637,12 @@ async def _issue_appeal_link(bot, guild, member, punishment, audit_entry):
         link = f"{base_url}/{punishment}.html#token={token}"
         evidence = str(record.get("evidence") or "No evidence was attached to this moderation action.")
         await member.send(
-            f"You have been **{punishment.upper()}** in **{guild.name}**.\\n\\n"
-            f"**Reason**\\n{reason[:900]}\\n\\n"
-            f"**Evidence**\\n{evidence}\\n\\n"
-            f"**By**\\n{moderator.mention} ({moderator})\\n\\n"
-            f"To appeal, please visit the link for your punishment (valid for 30 days):\\n{link}"
+            f"You have been **{punishment}** in **{guild.name}**.\\n\\n"
+            f"**Reason:** {reason[:900]}\\n"
+            f"**By:** {moderator.mention} ({moderator})\\n\\n"
+            f"To appeal, please visit: {link}\\n"
+            f"Our staff will see your appeal and follow accordingly. "
+            f"This link is valid for 30 days."
         )
     except discord.Forbidden:
         await collection.delete_one({"token": token})
@@ -2931,6 +2932,13 @@ class AppealReviewView(discord.ui.View):
                 return True
             await interaction.response.send_message("Only the server owner can review appeals from this direct message.", ephemeral=True)
             return False
+        record = await interaction.client.appeal_tokens_collection.find_one(
+            {"reviewMessageId": str(interaction.message.id)}, {"_id": 0, "reviewGuildId": 1, "guildId": 1}
+        )
+        expected_guild_id = str((record or {}).get("reviewGuildId") or (record or {}).get("guildId") or "")
+        if expected_guild_id and str(interaction.guild.id) != expected_guild_id:
+            await interaction.response.send_message("This appeal must be reviewed in its configured staff server.", ephemeral=True)
+            return False
         member = interaction.user
         if not (member.guild_permissions.administrator or member.guild_permissions.manage_messages or member.guild_permissions.manage_guild):
             await interaction.response.send_message("You need staff moderation permissions to review appeals.", ephemeral=True)
@@ -3041,15 +3049,17 @@ async def public_appeal_submit(request):
         return _json(request, {"error": "This appeal link is invalid, expired, or has already been used."}, 410)
 
     record = await collection.find_one({"token": token}, {"_id": 0})
-    guild = bot.get_guild(int(record["guildId"])) if record and str(record.get("guildId", "")).isdigit() else None
+    original_guild = bot.get_guild(int(record["guildId"])) if record and str(record.get("guildId", "")).isdigit() else None
     delivered = False
-    if guild:
-        config = await bot.staff_dashboard_store.get(str(guild.id), {})
+    if original_guild:
+        config = await bot.staff_dashboard_store.get(str(original_guild.id), {})
         modules = config.get("modules") or {}
         appeals = modules.get("appeals") if isinstance(modules.get("appeals"), dict) else {}
         logging_config = modules.get("logging") if isinstance(modules.get("logging"), dict) else {}
         events = logging_config.get("events") if isinstance(logging_config.get("events"), dict) else {}
         event_config = events.get("moderationActions") if isinstance(events.get("moderationActions"), dict) else {}
+        review_guild_id = str(appeals.get("reviewGuildId") or original_guild.id)
+        review_guild = bot.get_guild(int(review_guild_id)) if review_guild_id.isdigit() else None
         channel_id = str(
             appeals.get("reviewChannelId")
             or event_config.get("channelId")
@@ -3058,7 +3068,7 @@ async def public_appeal_submit(request):
             or logging_config.get("logChannelId")
             or ""
         )
-        channel = guild.get_channel(int(channel_id)) if channel_id.isdigit() else None
+        channel = review_guild.get_channel(int(channel_id)) if review_guild and channel_id.isdigit() else None
         embed = discord.Embed(
             title=f"New {kind.title()} Appeal",
             description=(
@@ -3078,11 +3088,11 @@ async def public_appeal_submit(request):
         try:
             if isinstance(channel, (discord.TextChannel, discord.Thread)):
                 review_message = await channel.send(embed=embed, view=AppealReviewView())
-                await collection.update_one({"token": token}, {"$set": {"reviewMessageId": str(review_message.id), "reviewChannelId": str(channel.id)}})
+                await collection.update_one({"token": token}, {"$set": {"reviewMessageId": str(review_message.id), "reviewChannelId": str(channel.id), "reviewGuildId": str(review_guild.id)}})
                 delivered = True
-            elif guild.owner:
-                review_message = await guild.owner.send(embed=embed, view=AppealReviewView())
-                await collection.update_one({"token": token}, {"$set": {"reviewMessageId": str(review_message.id), "reviewChannelId": "owner-dm"}})
+            elif review_guild and review_guild.owner:
+                review_message = await review_guild.owner.send(embed=embed, view=AppealReviewView())
+                await collection.update_one({"token": token}, {"$set": {"reviewMessageId": str(review_message.id), "reviewChannelId": "owner-dm", "reviewGuildId": str(review_guild.id)}})
                 delivered = True
         except discord.HTTPException:
             pass
