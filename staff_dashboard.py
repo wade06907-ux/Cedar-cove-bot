@@ -2628,11 +2628,13 @@ async def _issue_appeal_link(bot, guild, member, punishment, audit_entry):
         await collection.insert_one(record)
         base_url = (os.getenv("APPEALS_BASE_URL") or "https://cedar-cove-appeals.onrender.com").rstrip("/")
         link = f"{base_url}/{punishment}.html#token={token}"
+        evidence = "No evidence was attached to this moderation action."
         await member.send(
-            f"You received a **{punishment}** action in **{guild.name}**. "
-            f"You can submit one appeal using this personal link (valid for 30 days):\\n{link}\\n\\n"
-            "Your appeal will be sent to the Cedar Cove staff team for review. "
-            "Keep your direct messages open for any follow-up."
+            f"You have been **{punishment.upper()}** in **{guild.name}**.\\n\\n"
+            f"**Reason**\\n{reason[:900]}\\n\\n"
+            f"**Evidence**\\n{evidence}\\n\\n"
+            f"**By**\\n{moderator.mention} ({moderator})\\n\\n"
+            f"To appeal, please visit the link for your punishment (valid for 30 days):\\n{link}"
         )
     except discord.Forbidden:
         await collection.delete_one({"token": token})
