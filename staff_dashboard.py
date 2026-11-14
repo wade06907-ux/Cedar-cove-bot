@@ -358,16 +358,15 @@ def setup_staff(bot, get_store, logger):
                 return await interaction.response.send_message("Discord could not timeout that member. Check permissions and role hierarchy.", ephemeral=True)
             await interaction.response.send_message(f"{user.display_name} was muted for {minutes} minute(s). Reason: {reason[:500]}", ephemeral=True)
 
-        @moderation_group.command(name="unmute", description="Remove a timeout from a staff member.")
-        @discord.app_commands.describe(user="Staff member to unmute", reason="Reason for removing the mute")
+        @moderation_group.command(name="unmute", description="Remove a timeout from a member.")
+        @discord.app_commands.describe(user="Member to unmute", reason="Reason for removing the mute")
         async def unmute_staff_command(interaction: discord.Interaction, user: discord.Member, reason: str = "No reason provided"):
             if not interaction.guild or not interaction.user.guild_permissions.moderate_members:
                 return await interaction.response.send_message("You need Moderate Members permission.", ephemeral=True)
-            _, _, role_ids = await _command_staff_config(interaction.guild)
-            if user.bot or not _command_is_staff(user, role_ids):
-                return await interaction.response.send_message("This command is for staff members only.", ephemeral=True)
+            if user.bot:
+                return await interaction.response.send_message("Choose a human member.", ephemeral=True)
             try:
-                await user.timeout(None, reason=reason[:500])
+                await user.timeout(None, reason=f"CedarCoveModerator:{interaction.user.id} | {reason[:450]}")
             except (discord.Forbidden, discord.HTTPException):
                 return await interaction.response.send_message("Discord could not remove that timeout.", ephemeral=True)
             await interaction.response.send_message(f"{user.display_name} was unmuted. Reason: {reason[:500]}", ephemeral=True)
