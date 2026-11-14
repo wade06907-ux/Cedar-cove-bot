@@ -108,6 +108,16 @@ def setup_staff(bot, get_store, logger):
             allowed = {"owner", "co owner", "coowner", "admin", "administrator"}
             return any(re.sub(r"[^a-z0-9]+", " ", role.name.casefold()).strip() in allowed for role in interaction.user.roles)
 
+        def _parse_moderation_duration(value, maximum_seconds):
+            match = re.fullmatch(r"\\s*(\\d+)\\s*([smhd])\\s*", str(value or "").lower())
+            if not match:
+                raise ValueError("Use a duration such as 30m, 2h, or 3d.")
+            amount = int(match.group(1))
+            seconds = amount * {"s": 1, "m": 60, "h": 3600, "d": 86400}[match.group(2)]
+            if seconds < 1 or seconds > maximum_seconds:
+                raise ValueError("That duration is outside the allowed range.")
+            return seconds
+
         async def _command_suspend_staff(guild, member, record, actor_name, reason):
             normalize = lambda value: re.sub(r"[^a-z0-9]+", " ", value.casefold()).strip()
             config, ladder, role_ids = await _command_staff_config(guild)
@@ -262,20 +272,54 @@ def setup_staff(bot, get_store, logger):
                 message = f"{user.display_name} is on LOA. Time remaining: {remaining // 86400} day(s), {(remaining % 86400) // 3600} hour(s)."
             await interaction.response.send_message(message, ephemeral=True)
 
-        @moderation_group.command(name="ban", description="Ban a member from this server.")
-        @discord.app_commands.describe(user="Member to ban", reason="Reason for the ban")
-        async def ban_member_command(interaction: discord.Interaction, user: discord.Member, reason: str = "No reason provided"):
+        @moderation_group.command(name="ban", description="Ban a member permanently or for a chosen duration.")
+        @discord.app_commands.describe(user="Member to ban", duration="Use permanent or a duration such as 1d or 7d", reason="Reason for the ban")
+        async def ban_member_command(interaction: discord.Interaction, user: discord.Member, duration: str = "permanent", reason: str = "No reason provided"):
             if not interaction.guild or not interaction.user.guild_permissions.ban_members:
                 return await interaction.response.send_message("You need Ban Members permission.", ephemeral=True)
             if user.id == interaction.user.id or user.id == interaction.guild.owner_id:
                 return await interaction.response.send_message("You cannot ban yourself or the server owner.", ephemeral=True)
-            if interaction.guild.me.top_role <= user.top_role:
+            if not interaction.guild.me or interaction.guild.me.top_role <= user.top_role:
                 return await interaction.response.send_message("The bot's highest role must be above the target member.", ephemeral=True)
+            temporary_seconds = None
+            if duration.strip().lower() != "permanent":
+                try:
+                    temporary_seconds = _parse_moderation_duration(duration, 365 * 86400)
+                except ValueError as exc:
+                    return await interaction.response.send_message("Use permanent or a duration such as 1d or 7d. " + str(exc), ephemeral=True)
             try:
                 await user.ban(reason=f"CedarCoveModerator:{interaction.user.id} | {reason[:450]}", delete_message_seconds=0)
+                if temporary_seconds:
+                    collection = getattr(bot, "temp_bans_collection", None)
+                    if collection is None:
+                        logger.warning("Temporary ban storage is unavailable for guild %s.", interaction.guild.id)
+                    else:
+                        await collection.update_one(
+                            {"guildId": str(interaction.guild.id), "memberId": str(user.id)},
+                            {"$set": {"guildId": str(interaction.guild.id), "memberId": str(user.id),
+                                      "expiresAt": int(time.time()) + temporary_seconds, "active": True,
+                                      "issuedBy": str(interaction.user.id)}},
+                            upsert=True,
+                        )
             except (discord.Forbidden, discord.HTTPException):
                 return await interaction.response.send_message("Discord could not ban that member. Check permissions and role hierarchy.", ephemeral=True)
-            await interaction.response.send_message(f"{user.display_name} was banned. Reason: {reason[:500]}", ephemeral=True)
+            label = f"for {duration}" if temporary_seconds else "permanently"
+            await interaction.response.send_message(f"{user.display_name} was banned {label}. Reason: {reason[:500]}", ephemeral=True)
+
+        @moderation_group.command(name="kick", description="Kick a member from this server.")
+        @discord.app_commands.describe(user="Member to kick", reason="Reason for the kick")
+        async def kick_member_command(interaction: discord.Interaction, user: discord.Member, reason: str = "No reason provided"):
+            if not interaction.guild or not interaction.user.guild_permissions.kick_members:
+                return await interaction.response.send_message("You need Kick Members permission.", ephemeral=True)
+            if user.id == interaction.user.id or user.id == interaction.guild.owner_id:
+                return await interaction.response.send_message("You cannot kick yourself or the server owner.", ephemeral=True)
+            if not interaction.guild.me or interaction.guild.me.top_role <= user.top_role:
+                return await interaction.response.send_message("The bot's highest role must be above the target member.", ephemeral=True)
+            try:
+                await user.kick(reason=f"CedarCoveModerator:{interaction.user.id} | {reason[:450]}")
+            except (discord.Forbidden, discord.HTTPException):
+                return await interaction.response.send_message("Discord could not kick that member. Check permissions and role hierarchy.", ephemeral=True)
+            await interaction.response.send_message(f"{user.display_name} was kicked. Reason: {reason[:500]}", ephemeral=True)
 
         @moderation_group.command(name="warn", description="Warn a non-staff server member.")
         @discord.app_commands.describe(user="Non-staff member to warn", reason="Reason for the warning")
@@ -294,20 +338,19 @@ def setup_staff(bot, get_store, logger):
             await store.set(str(interaction.guild.id), records)
             await interaction.response.send_message(f"{user.display_name} was warned. Reason: {reason[:500]}", ephemeral=True)
 
-        @moderation_group.command(name="mute", description="Timeout a staff member.")
-        @discord.app_commands.describe(user="Staff member to mute", minutes="Timeout length in minutes", reason="Reason for the mute")
+        @moderation_group.command(name="mute", description="Timeout a member for a chosen duration.")
+        @discord.app_commands.describe(user="Member to timeout", minutes="Timeout length in minutes (1-40320)", reason="Reason for the mute")
         async def mute_staff_command(interaction: discord.Interaction, user: discord.Member, minutes: discord.app_commands.Range[int, 1, 40320] = 60, reason: str = "No reason provided"):
             if not interaction.guild or not interaction.user.guild_permissions.moderate_members:
                 return await interaction.response.send_message("You need Moderate Members permission.", ephemeral=True)
-            _, _, role_ids = await _command_staff_config(interaction.guild)
-            if user.bot or not _command_is_staff(user, role_ids):
-                return await interaction.response.send_message("This command is for staff members only.", ephemeral=True)
-            if interaction.guild.me.top_role <= user.top_role:
-                return await interaction.response.send_message("The bot's highest role must be above the target staff member.", ephemeral=True)
+            if user.bot or user.id == interaction.user.id:
+                return await interaction.response.send_message("Choose another human member.", ephemeral=True)
+            if not interaction.guild.me or interaction.guild.me.top_role <= user.top_role:
+                return await interaction.response.send_message("The bot's highest role must be above the target member.", ephemeral=True)
             try:
                 await user.timeout(datetime.now(timezone.utc) + timedelta(minutes=int(minutes)), reason=f"CedarCoveModerator:{interaction.user.id} | {reason[:450]}")
             except (discord.Forbidden, discord.HTTPException):
-                return await interaction.response.send_message("Discord could not mute that staff member. Check permissions and role hierarchy.", ephemeral=True)
+                return await interaction.response.send_message("Discord could not timeout that member. Check permissions and role hierarchy.", ephemeral=True)
             await interaction.response.send_message(f"{user.display_name} was muted for {minutes} minute(s). Reason: {reason[:500]}", ephemeral=True)
 
         @moderation_group.command(name="unmute", description="Remove a timeout from a staff member.")
