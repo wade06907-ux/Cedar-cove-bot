@@ -2859,7 +2859,17 @@ class AppealReviewView(discord.ui.View):
         super().__init__(timeout=None)
 
     async def interaction_check(self, interaction):
-        if not (interaction.user.guild_permissions.administrator or interaction.user.guild_permissions.manage_messages or interaction.user.guild_permissions.manage_guild):
+        if interaction.guild is None:
+            record = await interaction.client.appeal_tokens_collection.find_one(
+                {"reviewMessageId": str(interaction.message.id)}, {"_id": 0, "guildId": 1}
+            )
+            guild = interaction.client.get_guild(int(record["guildId"])) if record and str(record.get("guildId", "")).isdigit() else None
+            if guild and guild.owner_id == interaction.user.id:
+                return True
+            await interaction.response.send_message("Only the server owner can review appeals from this direct message.", ephemeral=True)
+            return False
+        member = interaction.user
+        if not (member.guild_permissions.administrator or member.guild_permissions.manage_messages or member.guild_permissions.manage_guild):
             await interaction.response.send_message("You need staff moderation permissions to review appeals.", ephemeral=True)
             return False
         return True
@@ -3007,7 +3017,8 @@ async def public_appeal_submit(request):
                 await collection.update_one({"token": token}, {"$set": {"reviewMessageId": str(review_message.id), "reviewChannelId": str(channel.id)}})
                 delivered = True
             elif guild.owner:
-                await guild.owner.send(embed=embed, view=AppealReviewView())
+                review_message = await guild.owner.send(embed=embed, view=AppealReviewView())
+                await collection.update_one({"token": token}, {"$set": {"reviewMessageId": str(review_message.id), "reviewChannelId": "owner-dm"}})
                 delivered = True
         except discord.HTTPException:
             pass
