@@ -80,7 +80,7 @@ async def _issue_appeal_link(bot, guild, member, punishment, audit_entry):
     }
     try:
         await collection.insert_one(record)
-        base_url = (os.getenv("APPEALS_BASE_URL") or "https://cedarcoveappeals.vercel.app").rstrip("/")
+        base_url = (os.getenv("APPEALS_BASE_URL") or "https://cedar-cove-appeals.onrender.com").rstrip("/")
         link = f"{base_url}/{punishment}.html?token={token}"
         await member.send(
             f"You received a **{punishment}** action in **{guild.name}**. "
