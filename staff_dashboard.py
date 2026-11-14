@@ -289,11 +289,9 @@ def setup_staff(bot, get_store, logger):
                     return await interaction.response.send_message("Use permanent or a duration such as 1d or 7d. " + str(exc), ephemeral=True)
             try:
                 await user.ban(reason=f"CedarCoveModerator:{interaction.user.id} | {reason[:450]}", delete_message_seconds=0)
-                if temporary_seconds:
-                    collection = getattr(bot, "temp_bans_collection", None)
-                    if collection is None:
-                        logger.warning("Temporary ban storage is unavailable for guild %s.", interaction.guild.id)
-                    else:
+                collection = getattr(bot, "temp_bans_collection", None)
+                if collection is not None:
+                    if temporary_seconds:
                         await collection.update_one(
                             {"guildId": str(interaction.guild.id), "memberId": str(user.id)},
                             {"$set": {"guildId": str(interaction.guild.id), "memberId": str(user.id),
@@ -301,6 +299,13 @@ def setup_staff(bot, get_store, logger):
                                       "issuedBy": str(interaction.user.id)}},
                             upsert=True,
                         )
+                    else:
+                        await collection.update_one(
+                            {"guildId": str(interaction.guild.id), "memberId": str(user.id), "active": True},
+                            {"$set": {"active": False, "cancelledAt": int(time.time())}},
+                        )
+                elif temporary_seconds:
+                    logger.warning("Temporary ban storage is unavailable for guild %s.", interaction.guild.id)
             except (discord.Forbidden, discord.HTTPException):
                 return await interaction.response.send_message("Discord could not ban that member. Check permissions and role hierarchy.", ephemeral=True)
             label = f"for {duration}" if temporary_seconds else "permanently"
