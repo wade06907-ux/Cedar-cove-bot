@@ -2658,8 +2658,7 @@ async def _issue_appeal_link(bot, guild, member, punishment, audit_entry):
             f"**Reason:** {reason[:900]}\\n"
             f"**By:** {moderator.mention} ({moderator})\\n\\n"
             f"To appeal, please visit: {link}\\n"
-            f"Our staff will see your appeal and follow accordingly. "
-            f"This link is valid for 30 days."
+            f"Our staff will see your appeal and follow accordingly."
         )
     except discord.Forbidden:
         await collection.delete_one({"token": token})
