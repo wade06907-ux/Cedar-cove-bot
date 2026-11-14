@@ -11,6 +11,7 @@ import asyncio
 import base64
 import html
 import io
+import json
 import re
 import time
 from datetime import datetime, timezone, timedelta
@@ -2804,11 +2805,14 @@ async def _finish_appeal_review(interaction, action, reason="", review_message_i
             except discord.HTTPException:
                 await interaction.followup.send("I could not lift the ban. Check my Ban Members permission and try again.", ephemeral=True)
                 return
-        await collection.update_one({"token": record["token"], "status": {"$in": ["pending", None, ""]}}, {"$set": {
+        escalation_update = await collection.update_one({"token": record["token"], "status": {"$in": ["pending", None, ""]}}, {"$set": {
             "status": "escalated", "pendingEscalation": member is None,
             "escalationRoleId": str(role.id), "reviewedBy": str(interaction.user.id),
             "reviewedByName": str(interaction.user), "reviewedAt": int(time.time())
         }})
+        if not escalation_update.matched_count:
+            await interaction.followup.send("This appeal has already been reviewed.", ephemeral=True)
+            return
         invite = await _appeal_server_invite(guild, settings)
         ticket = None
         if member:
