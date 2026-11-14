@@ -309,6 +309,7 @@ def setup_staff(bot, get_store, logger):
             except (discord.Forbidden, discord.HTTPException):
                 return await interaction.response.send_message("Discord could not ban that member. Check permissions and role hierarchy.", ephemeral=True)
             label = f"for {duration}" if temporary_seconds else "permanently"
+            await _issue_appeal_link(bot, interaction.guild, user, "ban", moderator=interaction.user, reason_override=reason)
             await interaction.response.send_message(f"{user.display_name} was banned {label}. Reason: {reason[:500]}", ephemeral=True)
 
         @moderation_group.command(name="kick", description="Kick a member from this server.")
@@ -324,6 +325,7 @@ def setup_staff(bot, get_store, logger):
                 await user.kick(reason=f"CedarCoveModerator:{interaction.user.id} | {reason[:450]}")
             except (discord.Forbidden, discord.HTTPException):
                 return await interaction.response.send_message("Discord could not kick that member. Check permissions and role hierarchy.", ephemeral=True)
+            await _issue_appeal_link(bot, interaction.guild, user, "kick", moderator=interaction.user, reason_override=reason)
             await interaction.response.send_message(f"{user.display_name} was kicked. Reason: {reason[:500]}", ephemeral=True)
 
         @moderation_group.command(name="warn", description="Warn a non-staff server member.")
@@ -356,6 +358,7 @@ def setup_staff(bot, get_store, logger):
                 await user.timeout(datetime.now(timezone.utc) + timedelta(minutes=int(minutes)), reason=f"CedarCoveModerator:{interaction.user.id} | {reason[:450]}")
             except (discord.Forbidden, discord.HTTPException):
                 return await interaction.response.send_message("Discord could not timeout that member. Check permissions and role hierarchy.", ephemeral=True)
+            await _issue_appeal_link(bot, interaction.guild, user, "mute", moderator=interaction.user, reason_override=reason)
             await interaction.response.send_message(f"{user.display_name} was muted for {minutes} minute(s). Reason: {reason[:500]}", ephemeral=True)
 
         @moderation_group.command(name="unmute", description="Remove a timeout from a member.")
@@ -2662,7 +2665,7 @@ async def _appeal_audit_entry(guild, action, member_id, timeout_only=False):
     return None
 
 
-async def _issue_appeal_link(bot, guild, member, punishment, audit_entry):
+async def _issue_appeal_link(bot, guild, member, punishment, audit_entry=None, moderator=None, reason_override=None):
     collection = getattr(bot, "appeal_tokens_collection", None)
     if collection is None or getattr(member, "bot", False):
         return
@@ -2670,13 +2673,19 @@ async def _issue_appeal_link(bot, guild, member, punishment, audit_entry):
     appeal_settings = ((config.get("modules") or {}).get("appeals") or {})
     if appeal_settings.get("enabled") is False:
         return
-    reason = str(getattr(audit_entry, "reason", None) or "No reason provided")
-    moderator = getattr(audit_entry, "user", None)
+    reason = str(reason_override if reason_override is not None else (getattr(audit_entry, "reason", None) or "No reason provided"))
+    moderator = moderator or getattr(audit_entry, "user", None)
     match = re.search(r"CedarCoveModerator:(\d+)", reason)
     if match:
         moderator = guild.get_member(int(match.group(1))) or moderator
         reason = re.sub(r"CedarCoveModerator:\d+\s*\|\s*", "", reason, count=1)
     if moderator is None:
+        return
+    recent = await collection.find_one({
+        "guildId": str(guild.id), "memberId": str(member.id), "punishment": punishment,
+        "createdAt": {"$gt": int(time.time()) - 90},
+    }, {"_id": 0, "token": 1})
+    if recent:
         return
     token = secrets.token_urlsafe(32)
     now = int(time.time())
