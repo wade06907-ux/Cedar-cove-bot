@@ -3210,6 +3210,11 @@ class MegaBot(commands.Bot):
         self._health_runner: Optional[web.AppRunner] = None
 
     async def setup_hook(self):
+        try:
+            await self.appeal_tokens_collection.create_index("token", unique=True)
+        except Exception:
+            logger.exception("Could not initialize the appeal token index")
+
         # Start periodic role nickname syncing only after Discord's event loop is running.
         if not getattr(self, "_role_nickname_sync_task", None):
             from staff_dashboard import _role_nickname_sync_loop
