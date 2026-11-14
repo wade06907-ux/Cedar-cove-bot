@@ -585,12 +585,18 @@ def setup_staff(bot, get_store, logger):
         (_dashboard_log_member_join, 'on_member_join'), (_dashboard_log_member_leave, 'on_member_remove'),
         (_dashboard_log_member_ban, 'on_member_ban'), (_dashboard_log_member_unban, 'on_member_unban'),
         (_dashboard_log_member_update, 'on_member_update'), (_dashboard_log_voice_state_update, 'on_voice_state_update'),
-        (_appeal_member_ban, 'on_member_ban'), (_appeal_member_remove, 'on_member_remove'),
-        (_appeal_member_update, 'on_member_update'),
         (_dashboard_honeypot_message, 'on_message'),
     ]
     for listener, event_name in listeners:
         marker = '_dashboard_listener_' + event_name
+        if not getattr(bot, marker, False):
+            bot.add_listener(listener, event_name)
+            setattr(bot, marker, True)
+    for listener, event_name, marker in (
+        (_appeal_member_ban, "on_member_ban", "_appeal_ban_listener_added"),
+        (_appeal_member_remove, "on_member_remove", "_appeal_kick_listener_added"),
+        (_appeal_member_update, "on_member_update", "_appeal_timeout_listener_added"),
+    ):
         if not getattr(bot, marker, False):
             bot.add_listener(listener, event_name)
             setattr(bot, marker, True)
