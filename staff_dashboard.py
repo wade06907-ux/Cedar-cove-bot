@@ -1437,6 +1437,23 @@ async def save_config(request):
                     entry["events"] = events
             clean["modules"][str(name)] = entry
 
+        appeals_config = clean["modules"].get("appeals", {})
+        if isinstance(appeals_config, dict):
+            review_guild_id = str(appeals_config.get("reviewGuildId") or gid)
+            if not review_guild_id.isdigit():
+                return _json(request, {"error": "Choose a valid staff server for appeals."}, 400)
+            review_guild = request.app["staff_bot"].get_guild(int(review_guild_id))
+            if review_guild is None:
+                return _json(request, {"error": "The bot must be in the selected staff server."}, 400)
+            review_channel_id = str(appeals_config.get("reviewChannelId") or "")
+            if review_channel_id:
+                review_channel = review_guild.get_channel(int(review_channel_id)) if review_channel_id.isdigit() else None
+                if not isinstance(review_channel, discord.TextChannel):
+                    return _json(request, {"error": "Choose a text channel from the selected staff server for appeal reviews."}, 400)
+                if review_guild.me and not review_channel.permissions_for(review_guild.me).send_messages:
+                    return _json(request, {"error": "The bot needs Send Messages permission in the selected appeal review channel."}, 403)
+            appeals_config["reviewGuildId"] = review_guild_id
+
         # Respect per-event switches from the dashboard instead of forcing them on.
         # Normalize nested event settings to legacy flat keys used by listeners.
         logging_settings = clean["modules"].setdefault("logging", {})
