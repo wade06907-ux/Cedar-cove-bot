@@ -2925,9 +2925,10 @@ class AppealReviewView(discord.ui.View):
     async def interaction_check(self, interaction):
         if interaction.guild is None:
             record = await interaction.client.appeal_tokens_collection.find_one(
-                {"reviewMessageId": str(interaction.message.id)}, {"_id": 0, "guildId": 1}
+                {"reviewMessageId": str(interaction.message.id)}, {"_id": 0, "guildId": 1, "reviewGuildId": 1}
             )
-            guild = interaction.client.get_guild(int(record["guildId"])) if record and str(record.get("guildId", "")).isdigit() else None
+            owner_guild_id = str((record or {}).get("reviewGuildId") or (record or {}).get("guildId") or "")
+            guild = interaction.client.get_guild(int(owner_guild_id)) if owner_guild_id.isdigit() else None
             if guild and guild.owner_id == interaction.user.id:
                 return True
             await interaction.response.send_message("Only the server owner can review appeals from this direct message.", ephemeral=True)
@@ -3060,14 +3061,14 @@ async def public_appeal_submit(request):
         event_config = events.get("moderationActions") if isinstance(events.get("moderationActions"), dict) else {}
         review_guild_id = str(appeals.get("reviewGuildId") or original_guild.id)
         review_guild = bot.get_guild(int(review_guild_id)) if review_guild_id.isdigit() else None
-        channel_id = str(
-            appeals.get("reviewChannelId")
-            or event_config.get("channelId")
+        legacy_review_channel = (
+            event_config.get("channelId")
             or logging_config.get("moderationActionsChannelId")
             or logging_config.get("channelId")
             or logging_config.get("logChannelId")
             or ""
-        )
+        ) if review_guild_id == str(original_guild.id) else ""
+        channel_id = str(appeals.get("reviewChannelId") or legacy_review_channel or "")
         channel = review_guild.get_channel(int(channel_id)) if review_guild and channel_id.isdigit() else None
         embed = discord.Embed(
             title=f"New {kind.title()} Appeal",
