@@ -1,3 +1,4 @@
+import asyncio
 import datetime as dt
 import logging
 import uuid
@@ -88,9 +89,9 @@ event_group = app_commands.Group(name="event", description="Create and manage Ce
 )
 async def event_create(
     interaction: discord.Interaction,
-    title: app_commands.Range[str, 1, 100],
+    title: str,
     starts_at: str,
-    description: app_commands.Range[str, 1, 1000] = "",
+    description: str = "",
     channel: discord.TextChannel = None,
 ):
     if interaction.guild is None or not isinstance(interaction.user, discord.Member):
@@ -98,6 +99,9 @@ async def event_create(
         return
     if not (interaction.user.guild_permissions.manage_events or interaction.user.guild_permissions.administrator):
         await interaction.response.send_message("You need **Manage Events** permission to create events.", ephemeral=True)
+        return
+    if not title.strip() or len(title.strip()) > 100 or len(description) > 1000:
+        await interaction.response.send_message("Keep the title between 1 and 100 characters and the description under 1,000 characters.", ephemeral=True)
         return
 
     try:
@@ -258,7 +262,7 @@ async def event_reminder_loop(bot):
                     log.warning("Could not send reminder for event %s", event["_id"])
         except Exception:
             log.exception("Community event reminder loop failed")
-        await __import__("asyncio").sleep(30)
+        await asyncio.sleep(30)
 
 
 def setup_community_events(bot):
@@ -266,5 +270,4 @@ def setup_community_events(bot):
     bot.tree.add_command(event_group)
     bot.add_view(EventRSVPView())
     if not getattr(bot, "_community_event_reminder_task", None):
-        import asyncio
         bot._community_event_reminder_task = asyncio.create_task(event_reminder_loop(bot))
