@@ -2165,6 +2165,22 @@ async def _can_manage_staff(user, guild, request):
     return False
 
 
+
+async def _staff_manager(request):
+    user, error = await _authorized(request)
+    if error:
+        return None, None, error
+
+    guild = await _staff_guild(request, user)
+    if guild is None:
+        return None, None, _json(request, {"error": "Cedar Cove server could not be identified."}, 503)
+
+    if not await _can_manage_staff(user, guild, request):
+        return None, None, _json(request, {"error": "Your website username does not match an active Cedar Cove staff member."}, 403)
+
+    return user, guild, None
+
+
 async def dashboard_access(request):
     user, error = await _authorized(request)
     if error:
