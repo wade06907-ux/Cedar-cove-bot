@@ -3329,9 +3329,22 @@ rp_start_group = app_commands.Group(name="start", description="Start a roleplay 
 session_group = app_commands.Group(name="session", description="Roleplay session controls")
 
 
+def roleplay_staff_check():
+    async def predicate(interaction: discord.Interaction) -> bool:
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            return False
+        staff_role_names = {"owner", "co-owner", "admin", "mod", "trial staff"}
+        return (
+            interaction.user.guild_permissions.administrator
+            or interaction.user.guild_permissions.manage_events
+            or any(role.name.casefold() in staff_role_names for role in interaction.user.roles)
+        )
+    return app_commands.check(predicate)
+
+
 @rp_start_group.command(name="session", description="Announce a roleplay session and gather players")
 @app_commands.describe(number="How many players are needed for the session")
-@app_commands.checks.has_permissions(manage_events=True)
+@roleplay_staff_check()
 async def rp_start_session(interaction: discord.Interaction, number: app_commands.Range[int, 1, 100]):
     if not interaction.guild:
         await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
@@ -3394,7 +3407,7 @@ async def rp_start_session(interaction: discord.Interaction, number: app_command
 
 
 @session_group.command(name="end", description="Check attendance and end the roleplay signup")
-@app_commands.checks.has_permissions(manage_events=True)
+@roleplay_staff_check()
 async def end_roleplay_session(interaction: discord.Interaction):
     if not interaction.guild:
         await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
