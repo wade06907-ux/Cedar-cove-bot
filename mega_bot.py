@@ -3315,7 +3315,7 @@ class RoleplayJoinView(discord.ui.View):
         required = session["required"]
         announcement_text = session.get("announcement_text", interaction.message.content or "")
         await interaction.message.edit(
-            content=f"{announcement_text}\\n\\n🙋 **Joining: {count}/{required}**",
+            content=f"{announcement_text}\n\n🙋 **Joining: {count}/{required}**",
             view=self,
         )
         await interaction.response.send_message(
