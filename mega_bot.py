@@ -3313,6 +3313,11 @@ class RoleplayJoinView(discord.ui.View):
         updated = await collection.find_one({"_id": interaction.guild_id})
         count = len(updated.get("joiners", [])) if updated else 0
         required = session["required"]
+        announcement_text = session.get("announcement_text", interaction.message.content or "")
+        await interaction.message.edit(
+            content=f"{announcement_text}\\n\\n🙋 **Joining: {count}/{required}**",
+            view=self,
+        )
         await interaction.response.send_message(
             f"🙋 You're on the list! **{count}/{required}** players have joined.",
             ephemeral=True,
@@ -3374,6 +3379,7 @@ async def rp_start_session(interaction: discord.Interaction, number: app_command
             "channel_id": announcement_channel.id,
             "message_id": sent.id,
             "required": int(number),
+            "announcement_text": message_text,
             "joiners": [],
             "status": "gathering",
             "started_by": interaction.user.id,
