@@ -3116,15 +3116,18 @@ async def public_appeal_submit(request):
     now = int(time.time())
     claim = await collection.update_one(
         {"token": token, "punishment": kind, "memberId": clean["userId"],
-         "usedAt": None, "expiresAt": {"$gt": now}},
-        {"$set": {"usedAt": now, "submittedAt": now, "answers": clean, "status": "pending"}}
+         "usedAt": None, "submissionProcessing": {"$ne": True}, "expiresAt": {"$gt": now}},
+        {"$set": {"submissionProcessing": True, "submissionStartedAt": now}}
     )
     if not claim.matched_count:
-        return _json(request, {"error": "This appeal link is invalid, expired, or has already been used."}, 410)
+        return _json(request, {"error": "This appeal link is invalid, expired, or is already being submitted."}, 410)
 
     record = await collection.find_one({"token": token}, {"_id": 0})
     original_guild = bot.get_guild(int(record["guildId"])) if record and str(record.get("guildId", "")).isdigit() else None
     delivered = False
+    delivery_error = "The original server is unavailable to the appeal bot."
+    review_guild = None
+    channel = None
     if original_guild:
         config = await bot.staff_dashboard_store.get(str(original_guild.id), {})
         modules = config.get("modules") or {}
@@ -3162,15 +3165,55 @@ async def public_appeal_submit(request):
         try:
             if isinstance(channel, (discord.TextChannel, discord.Thread)):
                 review_message = await channel.send(embed=embed, view=AppealReviewView())
-                await collection.update_one({"token": token}, {"$set": {"reviewMessageId": str(review_message.id), "reviewChannelId": str(channel.id), "reviewGuildId": str(review_guild.id)}})
+                await collection.update_one({"token": token}, {"$set": {
+                    "reviewMessageId": str(review_message.id),
+                    "reviewChannelId": str(channel.id),
+                    "reviewGuildId": str(review_guild.id)
+                }})
                 delivered = True
             elif review_guild and review_guild.owner:
                 review_message = await review_guild.owner.send(embed=embed, view=AppealReviewView())
-                await collection.update_one({"token": token}, {"$set": {"reviewMessageId": str(review_message.id), "reviewChannelId": "owner-dm", "reviewGuildId": str(review_guild.id)}})
+                await collection.update_one({"token": token}, {"$set": {
+                    "reviewMessageId": str(review_message.id),
+                    "reviewChannelId": "owner-dm",
+                    "reviewGuildId": str(review_guild.id)
+                }})
                 delivered = True
-        except discord.HTTPException:
-            pass
-    return _json(request, {"ok": True, "delivered": delivered}, 201)
+            else:
+                delivery_error = (
+                    "The configured staff server or appeal review channel could not be found. "
+                    "Check the appeal destination settings saved for the server where the punishment was issued."
+                )
+        except discord.HTTPException as exc:
+            delivery_error = f"Discord could not deliver the appeal to the configured staff destination: {exc}"
+            logger = getattr(bot, "staff_dashboard_logger", None)
+            if logger:
+                logger.exception("Appeal delivery failed for token %s.", token[:10])
+    else:
+        delivery_error = (
+            "The original server for this punishment is not available to the bot, "
+            "so its appeal destination settings could not be loaded."
+        )
+
+    if not delivered:
+        await collection.update_one(
+            {"token": token, "submissionProcessing": True},
+            {"$unset": {"submissionProcessing": "", "submissionStartedAt": ""}}
+        )
+        return _json(request, {"error": delivery_error, "submitted": False}, 503)
+
+    finalized = await collection.update_one(
+        {"token": token, "usedAt": None, "submissionProcessing": True},
+        {"$set": {
+            "usedAt": int(time.time()),
+            "submittedAt": int(time.time()),
+            "answers": clean,
+            "status": "pending"
+        }, "$unset": {"submissionProcessing": "", "submissionStartedAt": ""}}
+    )
+    if not finalized.matched_count:
+        return _json(request, {"error": "The appeal was delivered, but its submission record needs staff attention."}, 500)
+    return _json(request, {"ok": True, "delivered": True}, 201)
 
 
 def register_staff_routes(app: web.Application):
