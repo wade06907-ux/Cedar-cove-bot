@@ -2142,9 +2142,16 @@ async def _can_manage_staff(user, guild, request):
     ladder_role_ids = [item.get("roleId") for item in ladder_items if isinstance(item, dict)]
 
     for member in guild.members:
-        if member.bot or str(member.name or "").strip().casefold() != username:
-            continue
-        return bool(_member_staff_roles(member, ladder_role_ids))
+        if not member.bot and str(member.name or "").strip().casefold() == username:
+            return bool(_member_staff_roles(member, ladder_role_ids))
+
+    # If the member cache is incomplete, make one server-side lookup by username.
+    try:
+        async for member in guild.fetch_members(limit=None):
+            if not member.bot and str(member.name or "").strip().casefold() == username:
+                return bool(_member_staff_roles(member, ladder_role_ids))
+    except (discord.Forbidden, discord.HTTPException):
+        pass
     return False
 
 
