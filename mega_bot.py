@@ -3217,6 +3217,13 @@ class MegaBot(commands.Bot):
             await self.temp_bans_collection.create_index([("active", 1), ("expiresAt", 1)])
         except Exception:
             logger.exception("Could not initialize moderation indexes")
+
+        try:
+            await self.community_events_collection.create_index([("guild_id", 1), ("status", 1), ("starts_at", 1)])
+        except Exception:
+            logger.exception("Could not initialize community event indexes")
+        from community_events import setup_community_events
+        setup_community_events(self)
         if not self._temporary_ban_task:
             self._temporary_ban_task = asyncio.create_task(temporary_ban_expiry_loop(self))
 
@@ -3274,6 +3281,7 @@ class MegaBot(commands.Bot):
 bot = MegaBot()
 bot.appeal_tokens_collection = cedar_cove_db["appeal_tokens"]
 bot.temp_bans_collection = cedar_cove_db["temporary_bans"]
+bot.community_events_collection = cedar_cove_db["community_events"]
 bot.appeal_ticket_store = tickets_store
 bot.ticket_control_view_cls = TicketControlView
 bot.ticket_open_view_cls = TicketOpenView
