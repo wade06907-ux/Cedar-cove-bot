@@ -2122,116 +2122,35 @@ async def _audit(request, gid, user, action, detail):
 
 async def _staff_guild(request, user=None):
     bot = request.app["staff_bot"]
-    account = user or {}
-    discord_id = str(
-        account.get("discordId")
-        or account.get("discord_id")
-        or account.get("linkedDiscordId")
-        or account.get("linked_discord_id")
-        or account.get("discordUserId")
-        or ""
-    ).strip()
-
-    # Prefer an unambiguous Cedar Cove match. This avoids making staff access
-    # depend on whether the auth service calls the linked ID discordId or discord_id.
-    cedar_guilds = [guild for guild in bot.guilds if "cedar cove" in guild.name.casefold()]
-    if len(cedar_guilds) == 1:
-        return cedar_guilds[0]
-
-    if discord_id.isdigit():
-        for guild in bot.guilds:
-            if str(getattr(guild, "owner_id", "")) == discord_id:
-                return guild
-
-            member = guild.get_member(int(discord_id))
-            if member is None:
-                try:
-                    member = await guild.fetch_member(int(discord_id))
-                except (discord.NotFound, discord.Forbidden, discord.HTTPException):
-                    continue
-
-            if _member_can_manage_staff(member):
-                return guild
-
-    # Only use the sole connected server when the designated owner account is
-    # authenticated; never guess between multiple unrelated servers.
-    username = str(account.get("username") or account.get("userName") or "").casefold()
-    if username == "glitchstorm7320" and len(bot.guilds) == 1:
-        return bot.guilds[0]
-
-    return None
-
-
-def _member_can_manage_staff(member):
-    allowed = {"owner", "co owner", "coowner", "admin", "administrator"}
-    return any(
-        re.sub(r"[^a-z0-9]+", " ", role.name.casefold()).strip() in allowed
-        for role in member.roles
-    )
-
-
-async def _staff_manager(request):
-    user, error = await _authorized(request)
-    if error:
-        return None, None, error
-
-    # Dashboard access is approved in the verification server's users.whitelisted field.
-    if not bool(user.get("whitelisted", False)):
-        return None, None, _json(request, {
-            "error": "Your website account has not been approved for dashboard access."        }, 403)
-
-    guild = await _staff_guild(request, user)
-    if guild is None:
-        return None, None, _json(request, {"error": "The bot could not identify a Cedar Cove server for your linked Discord account. Make sure your Discord account is linked and the bot is in the server."}, 503)
-    if not _can_manage_staff(user, guild):
-        return None, None, _json(request, {"error": "Staff Management is available only to Owner, Co Owner, and Admin roles."}, 403)
-    return user, guild, None
+    cedar_guilds = [guild for guild in bot.guilds if guild.name.casefold().strip() == "cedar cove"]
+    if not cedar_guilds:
+        cedar_guilds = [guild for guild in bot.guilds if "cedar cove" in guild.name.casefold()]
+    if not cedar_guilds:
+        return None
+    return sorted(cedar_guilds, key=lambda guild: guild.name.casefold())[0]
 
 
 def _can_manage_staff(user, guild):
-    # The designated website owner account has staff-management access by default.
-    if str(user.get("username", "")).casefold() == "glitchstorm7320":
-        return True
-
-    discord_id = str(
-        user.get("discordId")
-        or user.get("discord_id")
-        or user.get("linkedDiscordId")
-        or user.get("linked_discord_id")
-        or user.get("discordUserId")
-        or ""
-    ).strip()
-    if not discord_id.isdigit():
+    # Dashboard login usernames are matched directly to the Discord username
+    # in Cedar Cove. No linked Discord ID or OAuth account is required.
+    username = str((user or {}).get("username") or (user or {}).get("userName") or "").strip().lstrip("@").casefold()
+    if not username:
         return False
 
-    # The actual Discord server owner must always qualify, even without an
-    # explicitly assigned role named "Owner".
-    if str(getattr(guild, "owner_id", "")) == discord_id:
-        return True
+    staff_config = {}
+    try:
+        # Role IDs configured in the staff ladder also count as staff roles.
+        staff_config = getattr(guild, "_staff_ladder_cache", {}) or {}
+    except Exception:
+        staff_config = {}
+    ladder_items = (((staff_config.get("modules") or {}).get("staff_ladder") or {}).get("items") or [])
+    ladder_role_ids = [item.get("roleId") for item in ladder_items if isinstance(item, dict)]
 
-    member = guild.get_member(int(discord_id))
-    if member is None:
-        return False
-
-    # Normalize emoji and decorative characters so roles such as "👑 Owner"
-    # and "Co-Owner" still match the intended permission names.
-    allowed = {"owner", "co owner", "coowner", "admin", "administrator"}
-    for role in member.roles:
-        normalized = re.sub(r"[^a-z0-9]+", " ", role.name.casefold()).strip()
-        if normalized in allowed:
-            return True
+    for member in guild.members:
+        if member.bot or str(member.name or "").strip().casefold() != username:
+            continue
+        return bool(_member_staff_roles(member, ladder_role_ids))
     return False
-
-
-async def dashboard_access(request):
-    user, error = await _authorized(request)
-    if error:
-        return error
-    if not bool(user.get("whitelisted", False)):
-        return _json(request, {"staffManagement": False, "dashboardAccess": False})
-    guild = await _staff_guild(request, user)
-    can_manage = bool(guild and _can_manage_staff(user, guild))
-    return _json(request, {"staffManagement": can_manage, "dashboardAccess": True})
 
 
 def _member_staff_roles(member, configured_role_ids=None):
