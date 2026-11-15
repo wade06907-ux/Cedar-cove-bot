@@ -646,7 +646,7 @@ async def _audit_log_reader_loop(bot):
             except discord.Forbidden:
                 logger.warning("Cannot read Discord audit log: guild=%s; grant View Audit Log", guild.id)
             except (discord.HTTPException, ValueError, TypeError) as exc:
-                logger.warning("Audit reader failed for guild=%s: %s", guild.id, exc)
+                logger.exception("Audit reader failed for guild=%s; full traceback follows", guild.id)
             except Exception:
                 logger.exception("Unexpected audit reader error for guild=%s", guild.id)
         await asyncio.sleep(2)
@@ -2153,6 +2153,21 @@ async def _can_manage_staff(user, guild, request):
     except (discord.Forbidden, discord.HTTPException):
         pass
     return False
+
+
+async def dashboard_access(request):
+    user, error = await _authorized(request)
+    if error:
+        return error
+    guild = await _staff_guild(request, user)
+    if guild is None:
+        return _json(request, {"staffManagement": False, "error": "Cedar Cove server could not be identified."}, 200)
+    allowed = await _can_manage_staff(user, guild, request)
+    return _json(request, {
+        "staffManagement": bool(allowed),
+        "guildId": str(guild.id),
+        "guildName": guild.name,
+    })
 
 
 def _member_staff_roles(member, configured_role_ids=None):
