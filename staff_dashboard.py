@@ -592,7 +592,17 @@ async def _audit_log_reader_loop(bot):
                     emoji, color = action_styles.get(action_key, ("📋", discord.Color.blurple()))
                     action = str(entry.action).replace("_", " ").title()
                     actor = entry.user
-                    target = entry.target
+                    try:
+                        # Some Discord audit entries (notably malformed role entries)
+                        # can have no target ID. discord.py's lazy target converter
+                        # calls int(None) for those records, so keep the log reader alive.
+                        target = entry.target
+                    except (TypeError, ValueError, AttributeError):
+                        target = None
+                        logger.debug(
+                            "Skipping invalid audit target: guild=%s entry=%s action=%s target_id=%r",
+                            guild.id, entry.id, action_key, getattr(entry, "target_id", None),
+                        )
                     embed = discord.Embed(
                         title=f"{emoji} {action}",
                         color=color,
