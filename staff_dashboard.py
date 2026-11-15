@@ -2130,19 +2130,14 @@ async def _staff_guild(request, user=None):
     return sorted(cedar_guilds, key=lambda guild: guild.name.casefold())[0]
 
 
-def _can_manage_staff(user, guild):
-    # Dashboard login usernames are matched directly to the Discord username
-    # in Cedar Cove. No linked Discord ID or OAuth account is required.
+async def _can_manage_staff(user, guild, request):
+    # Match the dashboard login username to the Discord username in Cedar Cove.
+    # No linked Discord ID or OAuth account is required.
     username = str((user or {}).get("username") or (user or {}).get("userName") or "").strip().lstrip("@").casefold()
     if not username:
         return False
 
-    staff_config = {}
-    try:
-        # Role IDs configured in the staff ladder also count as staff roles.
-        staff_config = getattr(guild, "_staff_ladder_cache", {}) or {}
-    except Exception:
-        staff_config = {}
+    staff_config = await request.app["staff_store"].get(str(guild.id), {})
     ladder_items = (((staff_config.get("modules") or {}).get("staff_ladder") or {}).get("items") or [])
     ladder_role_ids = [item.get("roleId") for item in ladder_items if isinstance(item, dict)]
 
