@@ -3135,16 +3135,37 @@ async def public_appeal_submit(request):
         logging_config = modules.get("logging") if isinstance(modules.get("logging"), dict) else {}
         events = logging_config.get("events") if isinstance(logging_config.get("events"), dict) else {}
         event_config = events.get("moderationActions") if isinstance(events.get("moderationActions"), dict) else {}
-        review_guild_id = str(appeals.get("reviewGuildId") or original_guild.id)
-        review_guild = bot.get_guild(int(review_guild_id)) if review_guild_id.isdigit() else None
-        legacy_review_channel = (
-            event_config.get("channelId")
-            or logging_config.get("moderationActionsChannelId")
-            or logging_config.get("channelId")
-            or logging_config.get("logChannelId")
-            or ""
-        ) if review_guild_id == str(original_guild.id) else ""
-        channel_id = str(appeals.get("reviewChannelId") or legacy_review_channel or "")
+
+        # Prefer the destination configured on the punished server. If it has no
+        # review channel, allow a dedicated staff server's own Appeals settings
+        # to define its review channel.
+        review_guild_id = str(appeals.get("reviewGuildId") or "")
+        channel_id = str(appeals.get("reviewChannelId") or "")
+        if not channel_id:
+            candidates = []
+            for candidate_guild in bot.guilds:
+                candidate_config = await bot.staff_dashboard_store.get(str(candidate_guild.id), {})
+                candidate_modules = candidate_config.get("modules") or {}
+                candidate_appeals = candidate_modules.get("appeals") if isinstance(candidate_modules.get("appeals"), dict) else {}
+                candidate_review_guild_id = str(candidate_appeals.get("reviewGuildId") or "")
+                candidate_channel_id = str(candidate_appeals.get("reviewChannelId") or "")
+                if candidate_review_guild_id == str(candidate_guild.id) and candidate_channel_id:
+                    candidates.append((candidate_guild, candidate_channel_id))
+            if len(candidates) == 1:
+                review_guild, channel_id = candidates[0]
+                review_guild_id = str(review_guild.id)
+            else:
+                review_guild = None
+        if not review_guild:
+            review_guild = bot.get_guild(int(review_guild_id)) if review_guild_id.isdigit() else None
+        if not channel_id and review_guild_id == str(original_guild.id):
+            channel_id = str(
+                event_config.get("channelId")
+                or logging_config.get("moderationActionsChannelId")
+                or logging_config.get("channelId")
+                or logging_config.get("logChannelId")
+                or ""
+            )
         channel = review_guild.get_channel(int(channel_id)) if review_guild and channel_id.isdigit() else None
         embed = discord.Embed(
             title=f"New {kind.title()} Appeal",
@@ -3171,18 +3192,10 @@ async def public_appeal_submit(request):
                     "reviewGuildId": str(review_guild.id)
                 }})
                 delivered = True
-            elif review_guild and review_guild.owner:
-                review_message = await review_guild.owner.send(embed=embed, view=AppealReviewView())
-                await collection.update_one({"token": token}, {"$set": {
-                    "reviewMessageId": str(review_message.id),
-                    "reviewChannelId": "owner-dm",
-                    "reviewGuildId": str(review_guild.id)
-                }})
-                delivered = True
             else:
                 delivery_error = (
-                    "The configured staff server or appeal review channel could not be found. "
-                    "Check the appeal destination settings saved for the server where the punishment was issued."
+                    "The appeal review channel could not be found. Select a text channel in Appeals settings "
+                    "and save the settings. The appeal link has not been consumed."
                 )
         except discord.HTTPException as exc:
             delivery_error = f"Discord could not deliver the appeal to the configured staff destination: {exc}"
