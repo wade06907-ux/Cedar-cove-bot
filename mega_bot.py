@@ -3253,6 +3253,7 @@ class MegaBot(commands.Bot):
         self.add_view(TicketClosedView())
         self.add_view(RequestCloseView())
         self.add_view(VoicePanelView())
+        self.add_view(RoleplayJoinView())
 
         try:
             self._health_runner = await start_health_server()
@@ -3286,6 +3287,150 @@ bot.appeal_ticket_store = tickets_store
 bot.ticket_control_view_cls = TicketControlView
 bot.ticket_open_view_cls = TicketOpenView
 bot.ticket_select_view_cls = TicketSelectView
+
+bot.roleplay_sessions_collection = cedar_cove_db["roleplay_sessions"]
+
+
+class RoleplayJoinView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="I am in", style=discord.ButtonStyle.success, emoji="🙋", custom_id="roleplay:join")
+    async def join_session(self, interaction: discord.Interaction, button: discord.ui.Button):
+        collection = bot.roleplay_sessions_collection
+        session = await collection.find_one({
+            "_id": interaction.guild_id,
+            "message_id": interaction.message.id,
+            "status": "gathering",
+        })
+        if not session:
+            await interaction.response.send_message("This roleplay session is no longer accepting players.", ephemeral=True)
+            return
+        await collection.update_one(
+            {"_id": interaction.guild_id, "message_id": interaction.message.id, "status": "gathering"},
+            {"$addToSet": {"joiners": interaction.user.id}},
+        )
+        updated = await collection.find_one({"_id": interaction.guild_id})
+        count = len(updated.get("joiners", [])) if updated else 0
+        required = session["required"]
+        await interaction.response.send_message(
+            f"🙋 You're on the list! **{count}/{required}** players have joined.",
+            ephemeral=True,
+        )
+
+
+rp_group = app_commands.Group(name="rp", description="Roleplay session commands")
+rp_start_group = app_commands.Group(name="start", description="Start a roleplay activity")
+session_group = app_commands.Group(name="session", description="Roleplay session controls")
+
+
+@rp_start_group.command(name="session", description="Announce a roleplay session and gather players")
+@app_commands.describe(number="How many players are needed for the session")
+@app_commands.checks.has_permissions(manage_events=True)
+async def rp_start_session(interaction: discord.Interaction, number: app_commands.Range[int, 1, 100]):
+    if not interaction.guild:
+        await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+        return
+    collection = bot.roleplay_sessions_collection
+    existing = await collection.find_one({"_id": interaction.guild_id, "status": "gathering"})
+    if existing:
+        await interaction.response.send_message(
+            "A roleplay session is already gathering players. End it with /session end first.",
+            ephemeral=True,
+        )
+        return
+
+    role = discord.utils.find(
+        lambda item: item.name.casefold() == "campaign/roleplay announcements",
+        interaction.guild.roles,
+    )
+    announcement_channel = discord.utils.find(
+        lambda item: item.name.casefold() in {"roleplay-announcements", "roleplay-announcement", "rp-announcements"},
+        interaction.guild.text_channels,
+    ) or (interaction.channel if isinstance(interaction.channel, discord.TextChannel) else None)
+    if announcement_channel is None:
+        await interaction.response.send_message(
+            "I couldn't find a roleplay announcements channel. Please create #roleplay-announcements.",
+            ephemeral=True,
+        )
+        return
+
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    message_text = (
+        f"👋✨ Hey {role.mention if role else '@Campaign/Roleplay Announcements'}! Calling all OOC and IC players!\n"
+        "It’s almost time for our next roleplay session! Whether you’re hanging out OOC or already getting into character, "
+        "start getting ready and gather up. Drop a reaction below so we know you're hyped, and get ready to jump into the story soon! 🎲💬"
+    )
+    sent = await announcement_channel.send(
+        content=message_text,
+        view=RoleplayJoinView(),
+        allowed_mentions=discord.AllowedMentions(roles=True, users=False, everyone=False),
+    )
+    await collection.replace_one(
+        {"_id": interaction.guild_id},
+        {
+            "_id": interaction.guild_id,
+            "guild_id": interaction.guild_id,
+            "channel_id": announcement_channel.id,
+            "message_id": sent.id,
+            "required": int(number),
+            "joiners": [],
+            "status": "gathering",
+            "started_by": interaction.user.id,
+            "created_at": dt.datetime.now(dt.timezone.utc),
+        },
+        upsert=True,
+    )
+    await interaction.followup.send(
+        f"📣 Roleplay announcement posted in {announcement_channel.mention}. **{number}** players are needed.",
+        ephemeral=True,
+    )
+
+
+@session_group.command(name="end", description="Check attendance and end the roleplay signup")
+@app_commands.checks.has_permissions(manage_events=True)
+async def end_roleplay_session(interaction: discord.Interaction):
+    if not interaction.guild:
+        await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+        return
+    collection = bot.roleplay_sessions_collection
+    session = await collection.find_one_and_update(
+        {"_id": interaction.guild_id, "status": "gathering"},
+        {"$set": {"status": "checking", "ended_at": dt.datetime.now(dt.timezone.utc)}},
+        return_document=True,
+    )
+    if not session:
+        await interaction.response.send_message("There isn't an active roleplay signup right now.", ephemeral=True)
+        return
+
+    joiners = session.get("joiners", [])
+    count = len(joiners)
+    required = int(session.get("required", 1))
+    channel = interaction.guild.get_channel(session.get("channel_id"))
+    if count >= required:
+        await collection.update_one({"_id": interaction.guild_id}, {"$set": {"status": "started"}})
+        result = (
+            f"🎲✨ **The roleplay session is starting!**\n"
+            f"**Players:** {count}/{required}\n"
+            + " ".join(f"<@{user_id}>" for user_id in joiners)
+        )
+        if channel:
+            await channel.send(result, allowed_mentions=discord.AllowedMentions(users=False))
+        await interaction.response.send_message(f"✅ Enough players joined ({count}/{required}). The session can start!", ephemeral=True)
+    else:
+        await collection.update_one({"_id": interaction.guild_id}, {"$set": {"status": "cancelled"}})
+        result = (
+            f"⏳ **Roleplay session not started.**\n"
+            f"Only **{count}/{required}** players joined, so there weren't enough people."
+        )
+        if channel:
+            await channel.send(result)
+        await interaction.response.send_message(f"❌ Not enough players ({count}/{required}). The session will not start.", ephemeral=True)
+
+
+rp_group.add_command(rp_start_group)
+bot.tree.add_command(rp_group)
+bot.tree.add_command(session_group)
 
 from staff_dashboard import setup_staff, register_staff_routes  # noqa: E402
 bot.auth_db = cedar_cove_mongo.get_default_database("authdb")
