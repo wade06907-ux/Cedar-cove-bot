@@ -3327,14 +3327,14 @@ class RoleplayJoinView(discord.ui.View):
             )
             if finished:
                 await interaction.message.edit(
-                    content=f"{announcement_text}\\n\\n🎲✨ **THE ROLEPLAY SESSION IS STARTING!**\\n🙋 **Players: {count}/{required}**",
+                    content=f"{announcement_text}\n\n🎲✨ **THE ROLEPLAY SESSION IS STARTING!**\n🙋 **Players: {count}/{required}**",
                     view=None,
                 )
                 await interaction.response.send_message("🎲 We have enough players! The session is starting!", ephemeral=True)
                 return
 
         await interaction.message.edit(
-            content=f"{announcement_text}\\n\\n🙋 **Joining: {count}/{required}**",
+            content=f"{announcement_text}\n\n🙋 **Joining: {count}/{required}**",
             view=self,
         )
         await interaction.response.send_message(
@@ -3363,7 +3363,7 @@ async def expire_roleplay_signup(guild_id: int, message_id: int):
             message = await channel.fetch_message(message_id)
             announcement_text = session.get("announcement_text", message.content)
             await message.edit(
-                content=f"{announcement_text}\\n\\n⏳ **SESSION FAILED — NOT ENOUGH PLAYERS**\\n🙋 **Players: {count}/{required}**\\nThe roleplay session will not start.",
+                content=f"{announcement_text}\n\n⏳ **SESSION FAILED — NOT ENOUGH PLAYERS**\n🙋 **Players: {count}/{required}**\nThe roleplay session will not start.",
                 view=None,
             )
         except discord.HTTPException:
