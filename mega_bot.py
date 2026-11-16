@@ -3306,22 +3306,68 @@ class RoleplayJoinView(discord.ui.View):
         if not session:
             await interaction.response.send_message("This roleplay session is no longer accepting players.", ephemeral=True)
             return
+
         await collection.update_one(
             {"_id": interaction.guild_id, "message_id": interaction.message.id, "status": "gathering"},
             {"$addToSet": {"joiners": interaction.user.id}},
         )
-        updated = await collection.find_one({"_id": interaction.guild_id})
-        count = len(updated.get("joiners", [])) if updated else 0
-        required = session["required"]
-        announcement_text = session.get("announcement_text", interaction.message.content or "")
+        updated = await collection.find_one({"_id": interaction.guild_id, "message_id": interaction.message.id})
+        if not updated or updated.get("status") != "gathering":
+            await interaction.response.send_message("This roleplay session has already been decided.", ephemeral=True)
+            return
+
+        count = len(updated.get("joiners", []))
+        required = int(updated["required"])
+        announcement_text = updated.get("announcement_text", interaction.message.content or "")
+        if count >= required:
+            finished = await collection.find_one_and_update(
+                {"_id": interaction.guild_id, "message_id": interaction.message.id, "status": "gathering"},
+                {"$set": {"status": "started", "finished_at": dt.datetime.now(dt.timezone.utc)}},
+                return_document=True,
+            )
+            if finished:
+                await interaction.message.edit(
+                    content=f"{announcement_text}\\n\\n🎲✨ **THE ROLEPLAY SESSION IS STARTING!**\\n🙋 **Players: {count}/{required}**",
+                    view=None,
+                )
+                await interaction.response.send_message("🎲 We have enough players! The session is starting!", ephemeral=True)
+                return
+
         await interaction.message.edit(
-            content=f"{announcement_text}\n\n🙋 **Joining: {count}/{required}**",
+            content=f"{announcement_text}\\n\\n🙋 **Joining: {count}/{required}**",
             view=self,
         )
         await interaction.response.send_message(
             f"🙋 You're on the list! **{count}/{required}** players have joined.",
             ephemeral=True,
         )
+
+
+async def expire_roleplay_signup(guild_id: int, message_id: int):
+    await asyncio.sleep(300)
+    collection = bot.roleplay_sessions_collection
+    session = await collection.find_one_and_update(
+        {"_id": guild_id, "message_id": message_id, "status": "gathering"},
+        {"$set": {"status": "failed", "finished_at": dt.datetime.now(dt.timezone.utc)}},
+        return_document=True,
+    )
+    if not session:
+        return
+
+    count = len(session.get("joiners", []))
+    required = int(session.get("required", 1))
+    guild = bot.get_guild(guild_id)
+    channel = guild.get_channel(session.get("channel_id")) if guild else None
+    if channel:
+        try:
+            message = await channel.fetch_message(message_id)
+            announcement_text = session.get("announcement_text", message.content)
+            await message.edit(
+                content=f"{announcement_text}\\n\\n⏳ **SESSION FAILED — NOT ENOUGH PLAYERS**\\n🙋 **Players: {count}/{required}**\\nThe roleplay session will not start.",
+                view=None,
+            )
+        except discord.HTTPException:
+            logger.exception("Could not update expired roleplay announcement for guild %s", guild_id)
 
 
 rp_group = app_commands.Group(name="rp", description="Roleplay session commands")
@@ -3384,6 +3430,7 @@ async def rp_start_session(interaction: discord.Interaction, number: app_command
         view=RoleplayJoinView(),
         allowed_mentions=discord.AllowedMentions(roles=True, users=False, everyone=False),
     )
+    created_at = dt.datetime.now(dt.timezone.utc)
     await collection.replace_one(
         {"_id": interaction.guild_id},
         {
@@ -3396,10 +3443,12 @@ async def rp_start_session(interaction: discord.Interaction, number: app_command
             "joiners": [],
             "status": "gathering",
             "started_by": interaction.user.id,
-            "created_at": dt.datetime.now(dt.timezone.utc),
+            "created_at": created_at,
+            "deadline": created_at + dt.timedelta(minutes=5),
         },
         upsert=True,
     )
+    asyncio.create_task(expire_roleplay_signup(interaction.guild_id, sent.id))
     await interaction.followup.send(
         f"📣 Roleplay announcement posted in {announcement_channel.mention}. **{number}** players are needed.",
         ephemeral=True,
