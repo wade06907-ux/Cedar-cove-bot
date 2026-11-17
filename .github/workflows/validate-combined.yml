@@ -1,0 +1,22 @@
+name: Validate combined KIWI service
+
+on:
+  push:
+    branches:
+      - integrate/verification-api
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  compile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Compile all bot and API modules
+        run: python -m compileall -q mega_bot.py community_events.py staff_dashboard.py verification_server.py
