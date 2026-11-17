@@ -1496,8 +1496,8 @@ async def save_bot_identity(request):
             return _json(request, {"error": "Choose an image smaller than 8 MB."}, 413)
         mime = match.group(1)
         signatures = {
-            "png": image_bytes.startswith(b"\\x89PNG\\r\\n\\x1a\\n"),
-            "jpeg": image_bytes.startswith(b"\\xff\\xd8\\xff"),
+            "png": image_bytes[:8] == bytes.fromhex("89504e470d0a1a0a"),
+            "jpeg": image_bytes[:3] == bytes.fromhex("ffd8ff"),
             "webp": len(image_bytes) >= 12 and image_bytes[:4] == b"RIFF" and image_bytes[8:12] == b"WEBP",
             "gif": image_bytes.startswith((b"GIF87a", b"GIF89a")),
         }
