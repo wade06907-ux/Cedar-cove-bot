@@ -24,7 +24,7 @@ import discord
 from aiohttp import web
 
 AUTH_API_URL = (os.getenv("AUTH_API_URL") or "https://verification-server-gjqt.onrender.com").rstrip("/")
-DASHBOARD_API_BUILD = "scnx-message-editor-2026-11-07"
+DASHBOARD_API_BUILD = "kiwi-per-server-identity-2026-11-17"
 STAFF_ROLE_NAMES = {"owner": "Owner", "co owner": "Co Owner", "admin": "Admin", "administrator": "Admin"}
 
 
@@ -1432,6 +1432,111 @@ async def save_staff_ladder(request):
     modules["staff_ladder"] = {"items": cleaned, "updatedAt": int(time.time()), "updatedBy": str(user.get("username") or "")}
     await request.app["staff_store"].set(str(guild.id), config)
     return _json(request, {"ok": True, "items": cleaned})
+
+
+async def get_bot_identity(request):
+    user, error = await _authorized(request)
+    if error:
+        return error
+    gid = request.match_info["guild_id"]
+    guild = request.app["staff_bot"].get_guild(int(gid)) if gid.isdigit() else None
+    if guild is None:
+        return _json(request, {"error": "The bot is not in that server."}, 404)
+    config = await request.app["staff_store"].get(gid, {})
+    identity = config.get("botIdentity") if isinstance(config, dict) else {}
+    identity = identity if isinstance(identity, dict) else {}
+    member = guild.me
+    guild_avatar = getattr(member, "guild_avatar", None) if member else None
+    avatar = guild_avatar.url if guild_avatar else (member.display_avatar.url if member else None)
+    return _json(request, {
+        "guildId": gid,
+        "guildName": guild.name,
+        "displayName": str(identity.get("displayName") or (member.nick if member else "") or ""),
+        "avatarUrl": avatar,
+        "hasGuildAvatar": bool(guild_avatar),
+    })
+
+
+async def save_bot_identity(request):
+    user, error = await _authorized(request)
+    if error:
+        return error
+    gid = request.match_info["guild_id"]
+    bot = request.app["staff_bot"]
+    guild = bot.get_guild(int(gid)) if gid.isdigit() else None
+    if guild is None:
+        return _json(request, {"error": "The bot is not in that server."}, 404)
+    member = guild.me
+    if member is None:
+        return _json(request, {"error": "The bot's server membership is unavailable."}, 503)
+    try:
+        body = await request.json()
+    except Exception:
+        return _json(request, {"error": "Invalid JSON body."}, 400)
+    if not isinstance(body, dict):
+        return _json(request, {"error": "Invalid JSON body."}, 400)
+
+    display_name = body.get("displayName")
+    if not isinstance(display_name, str) or len(display_name.strip()) > 32:
+        return _json(request, {"error": "Display name must be 32 characters or fewer."}, 400)
+    display_name = display_name.strip()
+    avatar_data = body.get("avatarData")
+    remove_avatar = body.get("removeAvatar") is True
+    if avatar_data is not None:
+        if not isinstance(avatar_data, str) or len(avatar_data) > 11_200_000:
+            return _json(request, {"error": "Choose an image smaller than 8 MB."}, 413)
+        match = re.fullmatch(r"data:image/(png|jpeg|webp|gif);base64,([A-Za-z0-9+/=]+)", avatar_data)
+        if not match:
+            return _json(request, {"error": "Use a PNG, JPG, WEBP, or GIF image."}, 400)
+        try:
+            image_bytes = base64.b64decode(match.group(2), validate=True)
+        except Exception:
+            return _json(request, {"error": "The uploaded image could not be read."}, 400)
+        if not image_bytes or len(image_bytes) > 8 * 1024 * 1024:
+            return _json(request, {"error": "Choose an image smaller than 8 MB."}, 413)
+        mime = match.group(1)
+        signatures = {
+            "png": image_bytes[:8] == bytes.fromhex("89504e470d0a1a0a"),
+            "jpeg": image_bytes[:3] == bytes.fromhex("ffd8ff"),
+            "webp": len(image_bytes) >= 12 and image_bytes[:4] == b"RIFF" and image_bytes[8:12] == b"WEBP",
+            "gif": image_bytes.startswith((b"GIF87a", b"GIF89a")),
+        }
+        if not signatures[mime]:
+            return _json(request, {"error": "The file contents do not match the selected image type."}, 400)
+    elif remove_avatar:
+        avatar_data = None
+
+    try:
+        await member.edit(nick=display_name or None, reason="Updated from the KIWI dashboard")
+        if isinstance(body.get("avatarData"), str) or remove_avatar:
+            route = discord.http.Route("PATCH", "/guilds/{guild_id}/members/@me", guild_id=guild.id)
+            await bot.http.request(route, json={"avatar": avatar_data}, reason="Updated server-specific bot avatar from KIWI dashboard")
+    except discord.Forbidden:
+        return _json(request, {"error": "Discord denied the change. Check the bot's permissions and server settings."}, 403)
+    except discord.HTTPException as exc:
+        return _json(request, {"error": f"Discord could not apply the identity change (HTTP {exc.status})."}, 502)
+    except Exception as exc:
+        request.app["staff_logger"].exception("Bot identity update failed for guild %s", gid)
+        return _json(request, {"error": "The identity could not be updated. Check the bot logs."}, 502)
+
+    config = await request.app["staff_store"].get(gid, {})
+    if not isinstance(config, dict):
+        config = {}
+    identity = config.get("botIdentity") if isinstance(config.get("botIdentity"), dict) else {}
+    identity["displayName"] = display_name
+    if isinstance(body.get("avatarData"), str):
+        identity["avatarData"] = body["avatarData"]
+    elif remove_avatar:
+        identity.pop("avatarData", None)
+    identity["updatedAt"] = int(time.time())
+    identity["updatedBy"] = str(user.get("username") or "")
+    config["botIdentity"] = identity
+    await request.app["staff_store"].set(gid, config)
+    guild_avatar = getattr(member, "guild_avatar", None)
+    avatar = guild_avatar.url if guild_avatar else member.display_avatar.url
+    await _audit(request, gid, user, "bot_identity", "Updated the server-specific KIWI bot identity")
+    return _json(request, {"ok": True, "guildId": gid, "displayName": display_name, "avatarUrl": avatar, "hasGuildAvatar": bool(guild_avatar)})
+
 
 
 async def get_config(request):
@@ -3237,6 +3342,8 @@ def register_staff_routes(app: web.Application):
     app.router.add_get("/api/dashboard/guilds/{guild_id}/roles", list_roles)
     app.router.add_get("/api/dashboard/guilds/{guild_id}/staff-ladder", get_staff_ladder)
     app.router.add_put("/api/dashboard/guilds/{guild_id}/staff-ladder", save_staff_ladder)
+    app.router.add_get("/api/dashboard/guilds/{guild_id}/bot-identity", get_bot_identity)
+    app.router.add_put("/api/dashboard/guilds/{guild_id}/bot-identity", save_bot_identity)
     app.router.add_get("/api/dashboard/guilds/{guild_id}/config", get_config)
     app.router.add_put("/api/dashboard/guilds/{guild_id}/config", save_config)
     # Compatibility aliases for dashboard versions that use /settings.
