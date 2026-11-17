@@ -1,7 +1,6 @@
 """Run KIWI and the Cedar Cove verification API behind one public port."""
 
 import asyncio
-import json
 import logging
 import os
 from multidict import CIMultiDict
@@ -28,13 +27,14 @@ VERIFY_URL = f"http://127.0.0.1:{VERIFY_INTERNAL_PORT}"
 
 HOP_HEADERS = {
     "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
-    "te", "trailers", "transfer-encoding", "upgrade", "host", "content-length",
+    "te", "trailer", "transfer-encoding", "upgrade", "host", "content-length", "proxy-connection",
 }
 
 
 async def create_session(app: web.Application):
     app["upstream"] = ClientSession(
         timeout=ClientTimeout(total=120),
+        auto_decompress=False,
         headers={"User-Agent": "KIWI-Unified-Proxy/1.0"},
     )
 
