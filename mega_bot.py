@@ -535,6 +535,7 @@ async def _verification_proxy(request: web.Request) -> web.StreamResponse:
 
 
 async def _start_verification_api():
+    os.environ.setdefault("CLIENT_IP_HEADER", "x-forwarded-for")
     import uvicorn
     import verification_server
 
