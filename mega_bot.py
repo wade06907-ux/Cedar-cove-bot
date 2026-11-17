@@ -18,6 +18,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 from dotenv import load_dotenv
+import aiohttp
 from aiohttp import web
 
 try:
@@ -32,6 +33,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 
 
 load_dotenv()
+os.environ["AUTH_API_URL"] = "http://127.0.0.1:18082"
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -493,8 +495,87 @@ async def root_handler(request: web.Request) -> web.Response:
     return web.Response(text="Mega Bot is running.")
 
 
+async def _verification_proxy(request: web.Request) -> web.StreamResponse:
+    """Forward website authentication requests to the private verification API."""
+    target = f"http://127.0.0.1:18082{request.rel_url}"
+    headers = {
+        key: value for key, value in request.headers.items()
+        if key.lower() not in {
+            "host", "connection", "keep-alive", "proxy-authenticate",
+            "proxy-authorization", "te", "trailer", "transfer-encoding",
+            "upgrade", "content-length",
+        }
+    }
+    if request.remote:
+        prior = request.headers.get("X-Forwarded-For")
+        headers["X-Forwarded-For"] = f"{prior}, {request.remote}" if prior else request.remote
+    headers["X-Forwarded-Proto"] = request.headers.get("X-Forwarded-Proto", "https")
+    body = await request.read() if request.can_read_body else None
+    try:
+        async with request.app["verification_http"].request(
+            request.method, target, headers=headers, data=body, allow_redirects=False
+        ) as upstream:
+            payload = await upstream.read()
+            response_headers = {
+                key: value for key, value in upstream.headers.items()
+                if key.lower() not in {
+                    "connection", "keep-alive", "proxy-authenticate",
+                    "proxy-authorization", "te", "trailer",
+                    "transfer-encoding", "upgrade", "content-length",
+                }
+            }
+            return web.Response(
+                body=payload, status=upstream.status, headers=response_headers
+            )
+    except Exception:
+        logger.exception("Verification API proxy failed for %s", request.path)
+        return web.json_response(
+            {"error": "Verification service is temporarily unavailable."}, status=502
+        )
+
+
+async def _start_verification_api():
+    import uvicorn
+    import verification_server
+
+    config = uvicorn.Config(
+        verification_server.app,
+        host="127.0.0.1",
+        port=18082,
+        log_level="info",
+        proxy_headers=False,
+        access_log=False,
+    )
+    server = uvicorn.Server(config)
+    task = asyncio.create_task(server.serve(), name="kiwi-verification-api")
+    for _ in range(300):
+        if server.started:
+            logger.info("Verification API listening privately on 127.0.0.1:18082")
+            return server, task
+        if task.done():
+            await task
+            raise RuntimeError("Verification API stopped before startup completed.")
+        await asyncio.sleep(0.05)
+    server.should_exit = True
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+    raise RuntimeError("Verification API did not become ready.")
+
+
 async def start_health_server() -> web.AppRunner:
     app = web.Application(client_max_size=30 * 1024 * 1024)
+    async def _open_verification_http(application):
+        application["verification_http"] = aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=30)
+        )
+    async def _close_verification_http(application):
+        session = application.get("verification_http")
+        if session and not session.closed:
+            await session.close()
+    app.on_startup.append(_open_verification_http)
+    app.on_cleanup.append(_close_verification_http)
+    app.router.add_route("*", "/api/auth/{tail:.*}", _verification_proxy)
+    app.router.add_route("*", "/api/internal/staff/{tail:.*}", _verification_proxy)
     app.router.add_get("/", root_handler)
     app.router.add_get("/health", health_handler)
     register_staff_routes(app)
@@ -3209,6 +3290,8 @@ class MegaBot(commands.Bot):
     def __init__(self):
         super().__init__(command_prefix=commands.when_mentioned_or("!"), intents=intents)
         self._health_runner: Optional[web.AppRunner] = None
+        self._verification_server = None
+        self._verification_task = None
         self._temporary_ban_task = None
 
     async def setup_hook(self):
@@ -3256,9 +3339,19 @@ class MegaBot(commands.Bot):
         self.add_view(RoleplayJoinView())
 
         try:
+            self._verification_server, self._verification_task = await _start_verification_api()
+        except Exception:
+            logger.exception("Failed to start the verification API")
+            raise
+
+        try:
             self._health_runner = await start_health_server()
         except Exception:
             logger.exception("Failed to start the health check server")
+            self._verification_server.should_exit = True
+            if self._verification_task:
+                await asyncio.gather(self._verification_task, return_exceptions=True)
+            raise
 
         try:
             synced = await self.tree.sync()
@@ -3272,6 +3365,10 @@ class MegaBot(commands.Bot):
     async def close(self):
         if self._health_runner:
             await self._health_runner.cleanup()
+        if self._verification_server:
+            self._verification_server.should_exit = True
+        if self._verification_task and not self._verification_task.done():
+            await asyncio.gather(self._verification_task, return_exceptions=True)
         await super().close()
 
     async def on_ready(self):
