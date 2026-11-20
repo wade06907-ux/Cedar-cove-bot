@@ -34,7 +34,7 @@ if not MONGODB_URI:
     )
 PORT = int(os.getenv("PORT", "8080"))  # Render injects PORT (default 10000)
 # Bearer-token APIs use wildcard CORS and do not rely on browser cookies.
-SESSION_TTL_MINUTES = 720
+SESSION_TTL_MINUTES = 20
 # Header that carries the real visitor IP when behind a proxy. Render sits behind Cloudflare, which sets True-Client-IP.
 # Leave empty to use the socket address (local development).
 CLIENT_IP_HEADER = (os.getenv("CLIENT_IP_HEADER") or ("True-Client-IP" if ON_RENDER else "")).lower()
@@ -243,11 +243,17 @@ def login(body: LoginRequest, request: Request):
     limiter.clear(acct_key)
 
     session_key = secrets.token_urlsafe(32)  # 256 bits
+    now = datetime.now(timezone.utc)
     sessions.insert_one(
         {
-            "_id": sha256(session_key),  # only the hash is stored
+            "_id": sha256(session_key),  # store only a hash, never the raw token
             "userId": user["_id"],
-            "expiresAt": datetime.now(timezone.utc) + timedelta(minutes=SESSION_TTL_MINUTES),
+            "username": user.get("username", ""),
+            "ipAddress": client_ip(request),
+            "createdAt": now,
+            "lastCheckedAt": now,
+            "expiresAt": now + timedelta(minutes=SESSION_TTL_MINUTES),
+            "status": "active",
         }
     )
     return {"sessionKey": session_key, "expiresInSeconds": SESSION_TTL_MINUTES * 60}
@@ -303,8 +309,15 @@ def me(authorization: Optional[str] = Header(default=None)):
     expires = sess["expiresAt"]
     if expires.tzinfo is None:
         expires = expires.replace(tzinfo=timezone.utc)
-    if expires <= datetime.now(timezone.utc):
+    now = datetime.now(timezone.utc)
+    if expires <= now:
+        sessions.delete_one({"_id": sess["_id"]})
         return unauthorized
+    # Record each scheduled session validation (5, 10, and 15 minutes).
+    sessions.update_one(
+        {"_id": sess["_id"], "status": "active"},
+        {"$set": {"lastCheckedAt": now}}
+    )
     user = users.find_one({"_id": sess.get("userId")}, {"firstName": 1, "lastName": 1, "username": 1, "email": 1, "discordId": 1, "discordUsername": 1, "whitelisted": 1})
     if not user and sess.get("discordId"):
         user = users.find_one({"discordId": sess["discordId"]}, {"firstName": 1, "lastName": 1, "username": 1, "email": 1, "discordId": 1, "discordUsername": 1, "whitelisted": 1})
