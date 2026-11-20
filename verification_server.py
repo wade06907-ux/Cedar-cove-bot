@@ -186,7 +186,7 @@ async def rate_limit(request: Request, call_next):
 app.add_middleware(
     CORSMiddleware,
     allow_origins=DASHBOARD_ALLOWED_ORIGINS,
-    allow_origin_regex=r"^https://[^/]+\\.onrender\\.com$",
+    allow_origin_regex=r"^https://[^/]+\.onrender\.com$",
     allow_methods=["POST", "OPTIONS"],
     allow_headers=["Content-Type", "X-Requested-With", "Authorization"],
     allow_credentials=True,
@@ -273,6 +273,7 @@ def login(body: LoginRequest, request: Request):
         samesite=SESSION_COOKIE_SAMESITE,
         path="/",
     )
+    response.headers["set-cookie"] += "; Partitioned"
     return response
 
 
@@ -338,6 +339,7 @@ def me(request: Request, authorization: Optional[str] = Header(default=None)):
         sessions.delete_one({"_id": sess["_id"]})
         response = unauthorized
         response.delete_cookie(SESSION_COOKIE_NAME, path="/", secure=SESSION_COOKIE_SECURE, httponly=True, samesite=SESSION_COOKIE_SAMESITE)
+        response.headers["set-cookie"] += "; Partitioned"
         return response
     renewed_expiry = min(now + timedelta(days=SESSION_IDLE_DAYS), absolute_expires)
     sessions.update_one(
@@ -366,6 +368,7 @@ def me(request: Request, authorization: Optional[str] = Header(default=None)):
         samesite=SESSION_COOKIE_SAMESITE,
         path="/",
     )
+    response.headers["set-cookie"] += "; Partitioned"
     return response
 
 
@@ -516,6 +519,7 @@ def logout(request: Request, authorization: Optional[str] = Header(default=None)
         sessions.delete_one({"_id": sha256(session_key)})
     response = Response(status_code=204, headers={"Cache-Control": "no-store"})
     response.delete_cookie(SESSION_COOKIE_NAME, path="/", secure=SESSION_COOKIE_SECURE, httponly=True, samesite=SESSION_COOKIE_SAMESITE)
+    response.headers["set-cookie"] += "; Partitioned"
     return response
 
 
