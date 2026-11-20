@@ -548,7 +548,7 @@ async def _start_verification_api():
         access_log=False,
     )
     server = uvicorn.Server(config)
-    task = asyncio.create_task(server.serve(), name="kiwi-verification-api")
+    task = asyncio.create_task(server.serve(), name="noxen-verification-api")
     for _ in range(300):
         if server.started:
             logger.info("Verification API listening privately on 127.0.0.1:18082")
