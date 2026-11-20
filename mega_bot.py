@@ -3807,6 +3807,38 @@ async def temporary_ban_expiry_loop(client):
 
 @bot.event
 async def on_member_join(member: discord.Member):
+    # Send a friendly Noxen introduction in the server's configured system channel.
+    try:
+        welcome_channel = member.guild.system_channel
+        if welcome_channel and welcome_channel.permissions_for(member.guild.me).send_messages:
+            welcome_embed = discord.Embed(
+                title=f"Welcome to {member.guild.name}!",
+                description=(
+                    f"Hey {member.mention}! 👋 I'm **Noxen**, your friendly server-management bot.\n\n"
+                    "I can help your server with:\n"
+                    "🛡️ **Moderation & server protection** — keep your community safe.\n"
+                    "🎫 **Tickets & support** — organize member questions and reports.\n"
+                    "👥 **Staff tools** — manage staff workflows and permissions.\n"
+                    "🎉 **Community features** — roleplay sessions and voice channels.\n\n"
+                    "**Need to see what I can do?** Run `/help` anytime to browse commands and learn how to use them.\n\n"
+                    "**Server administrators:** open the Noxen Dashboard to configure your server's modules and settings."
+                ),
+                color=discord.Color.from_rgb(49, 116, 220),
+            )
+            welcome_embed.set_thumbnail(url=member.display_avatar.url)
+            welcome_embed.set_footer(text="Noxen • Your community. Under control.")
+            view = discord.ui.View()
+            view.add_item(discord.ui.Button(
+                label="Open Noxen Dashboard",
+                style=discord.ButtonStyle.link,
+                url="https://webstie-pbx0.onrender.com",
+                emoji="⚙️",
+            ))
+            await welcome_channel.send(embed=welcome_embed, view=view)
+    except discord.Forbidden:
+        logger.info("Could not send Noxen welcome message in guild %s: missing permissions.", member.guild.id)
+    except discord.HTTPException:
+        logger.exception("Could not send Noxen welcome message in guild %s.", member.guild.id)
     # Anti-raid detection is configured independently for each destination server.
     try:
         config = await security_settings.find_one({"guild_id": member.guild.id}) or {}
