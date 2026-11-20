@@ -4556,6 +4556,103 @@ async def on_voice_state_update(
         pass
 
 # ---------------------------------------------------------------------------
+# Slash commands — Help
+# ---------------------------------------------------------------------------
+
+@bot.tree.command(name="help", description="Learn how to use Noxen and browse its commands.")
+async def noxen_help(interaction: discord.Interaction):
+    embed = discord.Embed(
+        title="Noxen Help Center",
+        description=(
+            "Your community. Under control.\n"
+            "Noxen helps manage your server, keep members safe, handle support, "
+            "and run community activities.\n\n"
+            "**Getting started**\n"
+            "Server owners and administrators: invite Noxen with the permissions "
+            "it needs, open your Noxen dashboard, choose your server, and configure "
+            "the modules you want to use. You do not need to enable every feature.\n"
+            "Members: use the commands below or the buttons on your server's panels."
+        ),
+        color=discord.Color.from_rgb(49, 116, 220),
+    )
+    embed.add_field(
+        name="🛡️ Moderation",
+        value=(
+            "**/moderation ban** — Ban a member permanently or for a duration.\n"
+            "**/moderation kick** — Remove a member from the server.\n"
+            "**/moderation warn** — Record a warning for a member.\n"
+            "**/moderation mute** — Timeout a member for a duration.\n"
+            "**/moderation unmute** — Remove a member's timeout."
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="👥 Staff management",
+        value=(
+            "**/staff promote** — Move a staff member up one configured rank.\n"
+            "**/staff demote** — Move a staff member down one configured rank.\n"
+            "**/staff action** — Promote, demote, warn, strike, or suspend staff.\n"
+            "**/staff loa** — Place a staff member on leave (1–90 days).\n"
+            "**/staff loa-status** — Check a staff member's leave status.\n\n"
+            "Staff discipline is managed with server commands, not dashboard buttons."
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="🎫 Tickets & setup",
+        value=(
+            "**/setup** — Open the ticket panel setup flow.\n"
+            "**/setup-log-channel** — Choose the server event-log channel.\n"
+            "**/claim** — Claim the ticket you're in.\n"
+            "**/unclaim** — Release your ticket claim.\n"
+            "**/close** — Close the current ticket.\n"
+            "**/reopen** — Reopen a closed ticket.\n"
+            "**/transfer** — Transfer a ticket to another support member.\n"
+            "**/requestclose** — Ask the ticket opener to confirm closing.\n"
+            "**/add** and **/remove** — Add or remove a member from the ticket."
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="🚨 Server protection",
+        value=(
+            "**/antiraid** — Configure automatic raid detection.\n"
+            "**/simulate raid** — Safely test raid protection.\n"
+            "**/lockdown** — Lock a channel or the server's text channels.\n"
+            "**/unlockdown** — Restore channels locked by Noxen."
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="🎭 Community & voice",
+        value=(
+            "**/rp start session** — Announce a roleplay session and gather players.\n"
+            "**/session end** — End a roleplay signup and check attendance.\n"
+            "**/tempchannel** — Set up a Join-to-Create voice channel.\n"
+            "**/setuplobby** — Configure the voice lobby system.\n"
+            "**/vc panel** — Post the temporary voice-channel control panel."
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="💡 Tips & permissions",
+        value=(
+            "• Type / in Discord and select a command to see its required options.\n"
+            "• Commands are grouped by category; for example, moderation commands start with /moderation.\n"
+            "• Some commands require Administrator, Manage Roles, Ban Members, "
+            "Kick Members, or Moderate Members permissions.\n"
+            "• Noxen also needs the matching Discord permissions and a role above "
+            "the members and roles it must manage.\n"
+            "• If a command is missing, check that Noxen was invited with "
+            "application commands enabled and allow Discord to refresh its commands."
+        ),
+        inline=False,
+    )
+    embed.set_footer(text="Noxen • Help • Some features must first be configured by a server administrator.")
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
