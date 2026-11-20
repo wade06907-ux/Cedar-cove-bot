@@ -33,8 +33,13 @@ if not MONGODB_URI:
         "MONGODB_URI is not set. On Render add it under Environment; locally copy .env.example to .env."
     )
 PORT = int(os.getenv("PORT", "8080"))  # Render injects PORT (default 10000)
-# Bearer-token APIs use wildcard CORS and do not rely on browser cookies.
-SESSION_TTL_MINUTES = 20
+# Conventional server-side web sessions: 7-day idle timeout, 30-day absolute limit.
+SESSION_IDLE_DAYS = 7
+SESSION_ABSOLUTE_DAYS = 30
+SESSION_COOKIE_NAME = "noxen_session"
+SESSION_COOKIE_SECURE = True
+SESSION_COOKIE_SAMESITE = "none"  # website and API currently use separate hosting domains
+DASHBOARD_ALLOWED_ORIGINS = [v.strip().rstrip("/") for v in os.getenv("DASHBOARD_ALLOWED_ORIGINS", "").split(",") if v.strip()]
 # Header that carries the real visitor IP when behind a proxy. Render sits behind Cloudflare, which sets True-Client-IP.
 # Leave empty to use the socket address (local development).
 CLIENT_IP_HEADER = (os.getenv("CLIENT_IP_HEADER") or ("True-Client-IP" if ON_RENDER else "")).lower()
@@ -50,7 +55,7 @@ PASSWORD_MESSAGE = "Password must be 10-64 characters with an uppercase letter, 
 client = MongoClient(MONGODB_URI)
 db = client.get_default_database("authdb")
 users = db["users"]        # {firstName,lastName,username,email,usernameLower,emailLower,passwordHash,createdAt}
-sessions = db["sessions"]  # {_id: sha256(sessionKey), userId, expiresAt}
+sessions = db["sessions"]  # {_id: sha256(cookie token), userId, createdAt, lastActivityAt, expiresAt, absoluteExpiresAt}
 
 
 @asynccontextmanager
@@ -180,10 +185,11 @@ async def rate_limit(request: Request, call_next):
 # Added after the rate limiter so it wraps it: 429 responses still carry CORS headers.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=DASHBOARD_ALLOWED_ORIGINS,
+    allow_origin_regex=r"^https://[^/]+\\.onrender\\.com$",
     allow_methods=["POST", "OPTIONS"],
-    allow_headers=["Content-Type", "Authorization"],
-    allow_credentials=False,
+    allow_headers=["Content-Type", "X-Requested-With", "Authorization"],
+    allow_credentials=True,
     max_age=3600,
 )
 
@@ -242,21 +248,32 @@ def login(body: LoginRequest, request: Request):
     limiter.clear(ip_key)
     limiter.clear(acct_key)
 
-    session_key = secrets.token_urlsafe(32)  # 256 bits
+    session_key = secrets.token_urlsafe(32)
     now = datetime.now(timezone.utc)
-    sessions.insert_one(
-        {
-            "_id": sha256(session_key),  # store only a hash, never the raw token
-            "userId": user["_id"],
-            "username": user.get("username", ""),
-            "ipAddress": client_ip(request),
-            "createdAt": now,
-            "lastCheckedAt": now,
-            "expiresAt": now + timedelta(minutes=SESSION_TTL_MINUTES),
-            "status": "active",
-        }
+    idle_expires = now + timedelta(days=SESSION_IDLE_DAYS)
+    absolute_expires = now + timedelta(days=SESSION_ABSOLUTE_DAYS)
+    sessions.insert_one({
+        "_id": sha256(session_key),
+        "userId": user["_id"],
+        "username": user.get("username", ""),
+        "ipAddress": client_ip(request),
+        "createdAt": now,
+        "lastActivityAt": now,
+        "expiresAt": idle_expires,
+        "absoluteExpiresAt": absolute_expires,
+        "status": "active",
+    })
+    response = JSONResponse({"ok": True, "username": user.get("username", "")}, headers={"Cache-Control": "no-store"})
+    response.set_cookie(
+        key=SESSION_COOKIE_NAME,
+        value=session_key,
+        max_age=SESSION_ABSOLUTE_DAYS * 24 * 60 * 60,
+        httponly=True,
+        secure=SESSION_COOKIE_SECURE,
+        samesite=SESSION_COOKIE_SAMESITE,
+        path="/",
     )
-    return {"sessionKey": session_key, "expiresInSeconds": SESSION_TTL_MINUTES * 60}
+    return response
 
 
 @app.post("/api/auth/signup")
@@ -298,25 +315,34 @@ def signup(body: SignupRequest):
 
 
 @app.post("/api/auth/me")
-def me(authorization: Optional[str] = Header(default=None)):
-    """Dashboard gate: confirms the session key with the server and returns who is signed in."""
-    unauthorized = JSONResponse({"error": "Not signed in."}, status_code=401, headers={"Cache-Control": "no-store"})
-    if not authorization or not authorization.startswith("Bearer "):
+def me(request: Request, authorization: Optional[str] = Header(default=None)):
+    """Validate and slide a server-side browser session."""
+    unauthorized = JSONResponse({"error": "Your session has expired. Please sign in again."}, status_code=401, headers={"Cache-Control": "no-store"})
+    session_key = request.cookies.get(SESSION_COOKIE_NAME)
+    # Temporary bearer compatibility for clients during the cookie migration.
+    if not session_key and authorization and authorization.startswith("Bearer "):
+        session_key = authorization[7:].strip()
+    if not session_key:
         return unauthorized
-    sess = sessions.find_one({"_id": sha256(authorization[7:].strip())})
+    sess = sessions.find_one({"_id": sha256(session_key), "status": "active"})
     if not sess:
         return unauthorized
     expires = sess["expiresAt"]
     if expires.tzinfo is None:
         expires = expires.replace(tzinfo=timezone.utc)
     now = datetime.now(timezone.utc)
-    if expires <= now:
+    absolute_expires = sess.get("absoluteExpiresAt", sess.get("createdAt", now) + timedelta(days=SESSION_ABSOLUTE_DAYS))
+    if absolute_expires.tzinfo is None:
+        absolute_expires = absolute_expires.replace(tzinfo=timezone.utc)
+    if expires <= now or absolute_expires <= now:
         sessions.delete_one({"_id": sess["_id"]})
-        return unauthorized
-    # Record each scheduled session validation (5, 10, and 15 minutes).
+        response = unauthorized
+        response.delete_cookie(SESSION_COOKIE_NAME, path="/", secure=SESSION_COOKIE_SECURE, httponly=True, samesite=SESSION_COOKIE_SAMESITE)
+        return response
+    renewed_expiry = min(now + timedelta(days=SESSION_IDLE_DAYS), absolute_expires)
     sessions.update_one(
         {"_id": sess["_id"], "status": "active"},
-        {"$set": {"lastCheckedAt": now}}
+        {"$set": {"lastActivityAt": now, "lastCheckedAt": now, "expiresAt": renewed_expiry}}
     )
     user = users.find_one({"_id": sess.get("userId")}, {"firstName": 1, "lastName": 1, "username": 1, "email": 1, "discordId": 1, "discordUsername": 1, "whitelisted": 1})
     if not user and sess.get("discordId"):
@@ -330,7 +356,17 @@ def me(authorization: Optional[str] = Header(default=None)):
     result["discordLinked"] = bool(discord_id)
     if discord_id:
         result["discordId"] = discord_id
-    return JSONResponse(result, headers={"Cache-Control": "no-store"})
+    response = JSONResponse(result, headers={"Cache-Control": "no-store"})
+    response.set_cookie(
+        key=SESSION_COOKIE_NAME,
+        value=session_key,
+        max_age=max(0, int((absolute_expires - now).total_seconds())),
+        httponly=True,
+        secure=SESSION_COOKIE_SECURE,
+        samesite=SESSION_COOKIE_SAMESITE,
+        path="/",
+    )
+    return response
 
 
 class StaffAccountDeleteRequest(BaseModel):
@@ -400,10 +436,12 @@ class AccountUpdateRequest(BaseModel):
 
 
 @app.post("/api/auth/account/update")
-def update_account(body: AccountUpdateRequest, authorization: Optional[str] = Header(default=None)):
-    if not authorization or not authorization.startswith("Bearer "):
+def update_account(body: AccountUpdateRequest, request: Request, authorization: Optional[str] = Header(default=None)):
+    session_key = request.cookies.get(SESSION_COOKIE_NAME)
+    if not session_key and authorization and authorization.startswith("Bearer "):
+        session_key = authorization[7:].strip()
+    if not session_key:
         return JSONResponse({"error": "Sign in before changing account settings."}, status_code=401)
-    session_key = authorization[7:].strip()
     session_hash = sha256(session_key)
     sess = sessions.find_one({"_id": session_hash})
     if not sess or not sess.get("userId"):
@@ -470,11 +508,15 @@ def update_account(body: AccountUpdateRequest, authorization: Optional[str] = He
 
 
 @app.post("/api/auth/logout")
-def logout(authorization: Optional[str] = Header(default=None)):
-    """Deletes the session key server-side. Send "Authorization: Bearer <sessionKey>"."""
-    if authorization and authorization.startswith("Bearer "):
-        sessions.delete_one({"_id": sha256(authorization[7:].strip())})
-    return Response(status_code=204)
+def logout(request: Request, authorization: Optional[str] = Header(default=None)):
+    session_key = request.cookies.get(SESSION_COOKIE_NAME)
+    if not session_key and authorization and authorization.startswith("Bearer "):
+        session_key = authorization[7:].strip()
+    if session_key:
+        sessions.delete_one({"_id": sha256(session_key)})
+    response = Response(status_code=204, headers={"Cache-Control": "no-store"})
+    response.delete_cookie(SESSION_COOKIE_NAME, path="/", secure=SESSION_COOKIE_SECURE, httponly=True, samesite=SESSION_COOKIE_SAMESITE)
+    return response
 
 
 # Imported by KIWI; the bot starts this ASGI app on a private loopback port.
