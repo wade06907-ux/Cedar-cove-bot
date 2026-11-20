@@ -1,5 +1,5 @@
 """
-Mega Bot — combines the Role Connections bot and the Ticket bot into a
+Noxen — combines the Role Connections bot and the Ticket bot into a
 single Discord application, sharing one bot process, one health-check
 server, and one .env configuration.
 """
@@ -58,7 +58,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="[%(asctime)s] [%(levelname)s] %(name)s: %(message)s",
 )
-logger = logging.getLogger("mega_bot")
+logger = logging.getLogger("noxen")
 ROLE_SYNC_LOG_LEVEL = logging.DEBUG
 
 START_TIME = time.time()
@@ -492,7 +492,7 @@ async def health_handler(request: web.Request) -> web.Response:
 
 
 async def root_handler(request: web.Request) -> web.Response:
-    return web.Response(text="Mega Bot is running.")
+    return web.Response(text="Noxen is running.")
 
 
 async def _verification_proxy(request: web.Request) -> web.StreamResponse:
