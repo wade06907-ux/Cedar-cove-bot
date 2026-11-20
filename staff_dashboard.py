@@ -1277,13 +1277,17 @@ def _origin(request: web.Request) -> str:
 
 
 def _headers(request: web.Request) -> dict:
-    return {
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Headers": "Authorization, Content-Type",
+    origin = (request.headers.get("Origin") or "").rstrip("/")
+    headers = {
+        "Access-Control-Allow-Headers": "Authorization, Content-Type, X-Requested-With",
         "Access-Control-Allow-Methods": "GET, POST, PUT, OPTIONS",
         "Vary": "Origin",
         "Cache-Control": "no-store",
     }
+    if origin.startswith("https://") and (origin.endswith(".onrender.com") or origin in {v.strip().rstrip("/") for v in os.getenv("DASHBOARD_ALLOWED_ORIGINS", "").split(",") if v.strip()}):
+        headers["Access-Control-Allow-Origin"] = origin
+        headers["Access-Control-Allow-Credentials"] = "true"
+    return headers
 
 
 def _json(request, data, status=200):
@@ -1292,12 +1296,14 @@ def _json(request, data, status=200):
 
 async def _authorized(request: web.Request):
     auth = request.headers.get("Authorization", "")
-    if not auth.startswith("Bearer ") or not auth[7:].strip():
+    cookie = request.headers.get("Cookie", "")
+    if not cookie and (not auth.startswith("Bearer ") or not auth[7:].strip()):
         return None, _json(request, {"error": "Sign in again to continue."}, 401)
     timeout = aiohttp.ClientTimeout(total=8)
     try:
+        forward_headers = {"Cookie": cookie} if cookie else {"Authorization": auth}
         async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.post(AUTH_API_URL + "/api/auth/me", headers={"Authorization": auth}) as resp:
+            async with session.post(AUTH_API_URL + "/api/auth/me", headers=forward_headers) as resp:
                 if resp.status != 200:
                     return None, _json(request, {"error": "Your website session is invalid or expired."}, 401)
                 user = await resp.json(content_type=None)
