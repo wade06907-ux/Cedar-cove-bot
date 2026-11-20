@@ -186,7 +186,6 @@ async def rate_limit(request: Request, call_next):
 app.add_middleware(
     CORSMiddleware,
     allow_origins=DASHBOARD_ALLOWED_ORIGINS,
-    allow_origin_regex=r"^https://[^/]+\.onrender\.com$",
     allow_methods=["POST", "OPTIONS"],
     allow_headers=["Content-Type", "X-Requested-With", "Authorization"],
     allow_credentials=True,
