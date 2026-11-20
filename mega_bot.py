@@ -3814,7 +3814,8 @@ async def on_member_join(member: discord.Member):
             welcome_embed = discord.Embed(
                 title=f"Welcome to {member.guild.name}!",
                 description=(
-                    f"Hey {member.mention}! 👋 I'm **Noxen**, your friendly server-management bot.\n\n"
+                    "Hey there! 👋 I am **Noxen**, your friendly server-management bot. "
+                    "[Click here](https://webstie-pbx0.onrender.com) to open the Noxen Dashboard.\n\n"
                     "I can help your server with:\n"
                     "🛡️ **Moderation & server protection** — keep your community safe.\n"
                     "🎫 **Tickets & support** — organize member questions and reports.\n"
