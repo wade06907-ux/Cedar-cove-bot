@@ -140,6 +140,11 @@ def setup_staff(bot, get_store, logger):
             record["suspended"] = True
             record["suspensionAddedMemberRole"] = added_member
             record["suspension"] = {"reason": reason or "Automatically suspended after three strikes", "by": {"username": actor_name}, "at": int(time.time()), "removedRoleIds": removed_ids, "memberRoleId": str(member_role.id), "pendingInvestigation": True}
+            auth_users = bot.auth_db["users"]
+            linked_account = await auth_users.find_one({"discordId": str(member.id)}, {"_id": 1})
+            if linked_account:
+                await auth_users.update_one({"_id": linked_account["_id"]}, {"$set": {"whitelisted": False, "dashboardAccessSuspended": True, "dashboardAccessUpdatedAt": datetime.now(timezone.utc)}})
+                await bot.auth_db["sessions"].delete_many({"userId": linked_account["_id"]})
             return True, "Suspended pending investigation."
 
         @staff_group.command(name="action", description="Promote, demote, warn, strike, or suspend a staff member.")
