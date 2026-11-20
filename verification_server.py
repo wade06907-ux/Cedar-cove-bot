@@ -451,8 +451,20 @@ def update_account(body: AccountUpdateRequest, request: Request, authorization: 
     expires = sess["expiresAt"]
     if expires.tzinfo is None:
         expires = expires.replace(tzinfo=timezone.utc)
-    if expires <= datetime.now(timezone.utc):
-        return JSONResponse({"error": "Your session expired. Sign in again."}, status_code=401)
+    now = datetime.now(timezone.utc)
+    absolute_expires = sess.get("absoluteExpiresAt", sess.get("createdAt", now) + timedelta(days=SESSION_ABSOLUTE_DAYS))
+    if absolute_expires.tzinfo is None:
+        absolute_expires = absolute_expires.replace(tzinfo=timezone.utc)
+    if expires <= now or absolute_expires <= now:
+        sessions.delete_one({"_id": session_hash})
+        response = JSONResponse({"error": "Your session expired. Sign in again."}, status_code=401)
+        response.delete_cookie(SESSION_COOKIE_NAME, path="/", secure=SESSION_COOKIE_SECURE, httponly=True, samesite=SESSION_COOKIE_SAMESITE)
+        response.headers["set-cookie"] += "; Partitioned"
+        return response
+    sessions.update_one(
+        {"_id": session_hash, "status": "active"},
+        {"$set": {"lastActivityAt": now, "expiresAt": min(now + timedelta(days=SESSION_IDLE_DAYS), absolute_expires)}}
+    )
 
     user = users.find_one({"_id": sess["userId"]})
     if not user:
