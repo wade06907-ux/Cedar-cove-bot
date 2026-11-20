@@ -1,4 +1,4 @@
-"""Session-authenticated staff dashboard API for Mega Bot.
+"""Session-authenticated management dashboard API for Noxen.
 
 Required environment variable:
   AUTH_API_URL=https://verification-server-gjqt.onrender.com
@@ -24,7 +24,7 @@ import discord
 from aiohttp import web
 
 AUTH_API_URL = (os.getenv("AUTH_API_URL") or "https://verification-server-gjqt.onrender.com").rstrip("/")
-DASHBOARD_API_BUILD = "kiwi-per-server-identity-2026-11-17"
+DASHBOARD_API_BUILD = "noxen-foundation-2026-11-20"
 STAFF_ROLE_NAMES = {"owner": "Owner", "co owner": "Co Owner", "admin": "Admin", "administrator": "Admin"}
 
 
@@ -1507,7 +1507,7 @@ async def save_bot_identity(request):
         avatar_data = None
 
     try:
-        await member.edit(nick=display_name or None, reason="Updated from the KIWI dashboard")
+        await member.edit(nick=display_name or None, reason="Updated from the Noxen dashboard")
         if isinstance(body.get("avatarData"), str) or remove_avatar:
             route = discord.http.Route("PATCH", "/guilds/{guild_id}/members/@me", guild_id=guild.id)
             await bot.http.request(route, json={"avatar": avatar_data}, reason="Updated server-specific bot avatar from KIWI dashboard")
@@ -1534,7 +1534,7 @@ async def save_bot_identity(request):
     await request.app["staff_store"].set(gid, config)
     guild_avatar = getattr(member, "guild_avatar", None)
     avatar = guild_avatar.url if guild_avatar else member.display_avatar.url
-    await _audit(request, gid, user, "bot_identity", "Updated the server-specific KIWI bot identity")
+    await _audit(request, gid, user, "bot_identity", "Updated the server-specific Noxen bot identity")
     return _json(request, {"ok": True, "guildId": gid, "displayName": display_name, "avatarUrl": avatar, "hasGuildAvatar": bool(guild_avatar)})
 
 
