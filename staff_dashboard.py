@@ -645,7 +645,7 @@ async def _audit_log_reader_loop(bot):
                         embed.add_field(name="Changes", value="\\n".join(details)[:1024], inline=False)
                     if guild.icon:
                         embed.set_thumbnail(url=guild.icon.url)
-                    embed.set_footer(text=f"{guild.name} • Cedar Cove Logs", icon_url=None)
+                    embed.set_footer(text=f"{guild.name} • Noxen Logs", icon_url=None)
                     try:
                         await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
                     except (discord.Forbidden, discord.HTTPException) as exc:
@@ -738,7 +738,7 @@ async def _log_event(guild, event_key, title, description):
         embed.set_author(name=guild.name, icon_url=guild.icon.url)
     else:
         embed.set_author(name=guild.name)
-    embed.set_footer(text='Cedar Cove • Server Logs')
+    embed.set_footer(text='Noxen • Server Logs')
     try:
         await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
         logger.info('Audit event delivered: guild=%s event=%s channel=%s', guild.id, event_key, channel.id)
