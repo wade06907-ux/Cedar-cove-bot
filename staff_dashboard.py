@@ -3,8 +3,8 @@
 Required environment variable:
   AUTH_API_URL=https://verification-server-gjqt.onrender.com
 
-CORS uses wildcard origins without browser cookies; API calls require a valid
-bearer session token verified by the verification service.
+Browser dashboard requests use the secure Noxen session cookie. The cookie is
+forwarded to the verification service for server-side validation.
 """
 import os
 import asyncio
