@@ -1284,7 +1284,7 @@ def _headers(request: web.Request) -> dict:
         "Vary": "Origin",
         "Cache-Control": "no-store",
     }
-    if origin.startswith("https://") and (origin.endswith(".onrender.com") or origin in {v.strip().rstrip("/") for v in os.getenv("DASHBOARD_ALLOWED_ORIGINS", "").split(",") if v.strip()}):
+    if origin and origin in {v.strip().rstrip("/") for v in os.getenv("DASHBOARD_ALLOWED_ORIGINS", "").split(",") if v.strip()}:
         headers["Access-Control-Allow-Origin"] = origin
         headers["Access-Control-Allow-Credentials"] = "true"
     return headers
