@@ -2230,6 +2230,80 @@ async def _delete_linked_dashboard_account(request, discord_id):
     return {"deleted": True, "found": True}
 
 
+async def staff_dashboard_accounts(request):
+    user, guild, error = await _staff_manager(request)
+    if error:
+        return error
+    users = request.app["staff_bot"].auth_db["users"]
+    cursor = users.find(
+        {"$or": [{"whitelisted": True}, {"dashboardAccessSuspended": True}]},
+        {"username": 1, "whitelisted": 1, "dashboardAccessSuspended": 1},
+    ).sort("usernameLower", 1)
+    items = []
+    async for account in cursor:
+        username = str(account.get("username") or "").strip()
+        if username:
+            items.append({"username": username, "suspended": bool(account.get("dashboardAccessSuspended"))})
+    return _json(request, {"items": items})
+
+
+async def staff_dashboard_account_action(request):
+    actor, guild, error = await _staff_manager(request)
+    if error:
+        return error
+    try:
+        body = await request.json()
+    except Exception:
+        return _json(request, {"error": "Invalid JSON body."}, 400)
+    username = str(body.get("username") or "").strip()
+    action = str(body.get("action") or "").strip().lower()
+    if not username or len(username) > 100:
+        return _json(request, {"error": "Enter a valid website username."}, 400)
+    if username.casefold() == str(actor.get("username") or "").casefold() and action == "revoke":
+        return _json(request, {"error": "You cannot revoke or delete your own account."}, 400)
+    auth_db = request.app["staff_bot"].auth_db
+    users, sessions = auth_db["users"], auth_db["sessions"]
+    account = await users.find_one(
+        {"usernameLower": username.casefold()},
+        {"_id": 1, "username": 1, "whitelisted": 1, "dashboardAccessSuspended": 1},
+    )
+    if account is None:
+        account = await users.find_one(
+            {"username": {"$regex": "^" + re.escape(username) + "$", "$options": "i"}},
+            {"_id": 1, "username": 1, "whitelisted": 1, "dashboardAccessSuspended": 1},
+        )
+    if account is None:
+        return _json(request, {"error": "No website account exists with that username."}, 404)
+
+    now = datetime.now(timezone.utc)
+    if action == "add":
+        await users.update_one(
+            {"_id": account["_id"]},
+            {"$set": {"whitelisted": True, "dashboardAccessUpdatedAt": now},
+             "$unset": {"dashboardAccessSuspended": ""}},
+        )
+        message = "Dashboard access granted."
+    elif action == "renew":
+        if not account.get("dashboardAccessSuspended"):
+            return _json(request, {"error": "This account is not awaiting access renewal."}, 409)
+        await users.update_one(
+            {"_id": account["_id"]},
+            {"$set": {"whitelisted": True, "dashboardAccessUpdatedAt": now},
+             "$unset": {"dashboardAccessSuspended": ""}},
+        )
+        message = "Dashboard access renewed."
+    elif action == "revoke":
+        await sessions.delete_many({"userId": account["_id"]})
+        await users.delete_one({"_id": account["_id"]})
+        message = "Website account deleted and all active sessions revoked."
+    else:
+        return _json(request, {"error": "Unknown account action."}, 400)
+    await _audit(request, str(guild.id), actor, "dashboard_account_" + action, username)
+    return _json(request, {"ok": True, "username": account.get("username", username), "message": message})
+
+
+
+
 async def _audit(request, gid, user, action, detail):
     store = request.app["audit_store"]
     records = await store.get(gid, [])
@@ -2659,6 +2733,11 @@ async def staff_action(request):
             return _json(request, {"error": "Discord could not update this member's roles. Try again."}, 502)
         record["suspended"] = True
         record["suspensionAddedMemberRole"] = added_member_role
+        auth_users = request.app["staff_bot"].auth_db["users"]
+        linked_account = await auth_users.find_one({"discordId": str(member.id)}, {"_id": 1})
+        if linked_account:
+            await auth_users.update_one({"_id": linked_account["_id"]}, {"$set": {"whitelisted": False, "dashboardAccessSuspended": True, "dashboardAccessUpdatedAt": datetime.now(timezone.utc)}})
+            await request.app["staff_bot"].auth_db["sessions"].delete_many({"userId": linked_account["_id"]})
         record["suspension"] = {"reason": reason, "by": actor, "at": now, "removedRoleIds": staff_role_ids, "memberRoleId": str(member_role.id)}
     elif action == "unsuspend":
         if not record.get("suspended"):
@@ -3338,6 +3417,8 @@ def register_staff_routes(app: web.Application):
     app.router.add_get("/api/dashboard/access", dashboard_access)
     app.router.add_get("/api/public/staff", public_staff_list)
     app.router.add_get("/api/dashboard/staff", staff_list)
+    app.router.add_get("/api/dashboard/staff-accounts", staff_dashboard_accounts)
+    app.router.add_post("/api/dashboard/staff-accounts/action", staff_dashboard_account_action)
     app.router.add_get("/api/dashboard/staff-actions-settings", staff_action_settings)
     app.router.add_put("/api/dashboard/staff-actions-settings", staff_action_settings)
     app.router.add_get("/api/dashboard/staff/{member_id}", staff_detail)
