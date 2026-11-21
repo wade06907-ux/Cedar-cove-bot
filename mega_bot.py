@@ -3290,12 +3290,27 @@ def build_panel_embed() -> discord.Embed:
 class MegaBot(commands.Bot):
     def __init__(self):
         super().__init__(command_prefix=commands.when_mentioned_or("!"), intents=intents)
+        self.owner_id = None
         self._health_runner: Optional[web.AppRunner] = None
         self._verification_server = None
         self._verification_task = None
         self._temporary_ban_task = None
 
     async def setup_hook(self):
+        try:
+            application = await self.application_info()
+            application_owner = application.owner
+            if application.team and application.team.owner:
+                application_owner = application.team.owner
+            self.owner_id = application_owner.id if application_owner else None
+            if self.owner_id:
+                logger.info("Owner-only !stop command enabled.")
+            else:
+                logger.warning("Could not identify the application owner; !stop is disabled.")
+        except Exception:
+            logger.exception("Could not identify the application owner; !stop is disabled.")
+            self.owner_id = None
+
         try:
             await self.appeal_tokens_collection.create_index("token", unique=True)
             await self.temp_bans_collection.create_index([("active", 1), ("expiresAt", 1)])
@@ -3362,6 +3377,23 @@ class MegaBot(commands.Bot):
                 "Failed to sync application commands. The bot will still start, "
                 "but slash commands may not appear until this is resolved."
             )
+
+    async def on_message(self, message):
+        if message.author.bot:
+            return
+
+        if message.content.strip().casefold() == "!stop":
+            if self.owner_id is None or message.author.id != self.owner_id:
+                return
+            try:
+                await message.reply("Owner shutdown accepted. Noxen is disconnecting now.")
+            except discord.HTTPException:
+                pass
+            logger.warning("Owner requested shutdown with !stop.")
+            await self.close()
+            return
+
+        await self.process_commands(message)
 
     async def close(self):
         if self._health_runner:
