@@ -4897,6 +4897,13 @@ class ConfirmChannelConnectView(discord.ui.View):
         if not source or not target or source.guild.id != interaction.guild_id:
             await interaction.response.edit_message(content="A selected channel is no longer available. Run /connect again.", embed=None, view=None)
             return
+        target_member = target.guild.get_member(interaction.user.id)
+        if not target_member or not target_member.guild_permissions.manage_guild:
+            await interaction.response.send_message(
+                "For safety, you must also have Manage Server permission in the destination server.",
+                ephemeral=True
+            )
+            return
         target_perms = target.permissions_for(target.guild.me)
         if not (target_perms.view_channel and target_perms.send_messages and target_perms.embed_links):
             await interaction.response.send_message("Noxen needs View Channel, Send Messages, and Embed Links in the destination channel.", ephemeral=True)
