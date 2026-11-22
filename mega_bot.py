@@ -3395,6 +3395,39 @@ class MegaBot(commands.Bot):
             await self.close()
             return
 
+        # Relay source-channel messages immediately; bot/webhook messages are ignored
+        # above, preventing relay loops between connected servers.
+        try:
+            link = await cross_server_channel_links.find_one({
+                "_id": message.channel.id, "source_guild_id": message.guild.id, "enabled": True
+            }) if message.guild else None
+            if link:
+                destination = bot.get_channel(int(link.get("target_channel_id", 0)))
+                if destination is None:
+                    destination = await bot.fetch_channel(int(link.get("target_channel_id", 0)))
+                display_name = getattr(message.author, "display_name", message.author.name)
+                avatar_url = message.author.display_avatar.url
+                content = (message.content or "").strip()
+                embed = discord.Embed(
+                    description=content[:4096] if content else None,
+                    color=discord.Color.blurple(),
+                    timestamp=message.created_at
+                )
+                embed.set_author(name=display_name, icon_url=avatar_url)
+                embed.set_footer(text=f"{message.guild.name} · #{message.channel.name}")
+                if message.attachments:
+                    files_text = "\\n".join(f"[{attachment.filename}]({attachment.url})" for attachment in message.attachments)
+                    embed.add_field(name="Attachments", value=files_text[:1024], inline=False)
+                if message.embeds and not content and not message.attachments:
+                    embed.description = "Shared an embed or rich message."
+                await destination.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+        except discord.NotFound:
+            logger.warning("Cross-server relay destination channel no longer exists for source %s", message.channel.id)
+        except discord.Forbidden:
+            logger.warning("Missing permission to relay from source channel %s to its destination", message.channel.id)
+        except Exception:
+            logger.exception("Cross-server channel relay failed for message %s", message.id)
+
         await self.process_commands(message)
 
     async def close(self):
@@ -4717,6 +4750,221 @@ async def noxen_help(interaction: discord.Interaction):
     )
     embed.set_footer(text="Noxen • Help • Some features must first be configured by a server administrator.")
     await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+
+# ---------------------------------------------------------------------------
+# One-way cross-server channel relay
+# ---------------------------------------------------------------------------
+
+cross_server_channel_links = cedar_cove_db["cross_server_channel_links"]
+
+
+class ConnectSourceSelect(discord.ui.Select):
+    def __init__(self, guild):
+        channels = [
+            channel for channel in guild.text_channels
+            if guild.me and channel.permissions_for(guild.me).view_channel
+            and channel.permissions_for(guild.me).read_message_history
+        ][:25]
+        options = [
+            discord.SelectOption(label=f"#{channel.name}"[:100], value=str(channel.id))
+            for channel in channels
+        ]
+        super().__init__(placeholder="Choose the source channel…", min_values=1, max_values=1, options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        source_id = int(self.values[0])
+        source = interaction.guild.get_channel(source_id)
+        if not source:
+            await interaction.response.edit_message(content="That source channel is no longer available.", embed=None, view=None)
+            return
+        view = ConnectGuildView(source_id)
+        await interaction.response.edit_message(
+            content=f"**Source channel:** {source.mention}\n\nNow choose the server that should receive messages.",
+            embed=None, view=view
+        )
+
+
+class ConnectSourceView(discord.ui.View):
+    def __init__(self, guild):
+        super().__init__(timeout=180)
+        self.add_item(ConnectSourceSelect(guild))
+
+
+class ConnectGuildSelect(discord.ui.Select):
+    def __init__(self, source_channel_id: int):
+        self.source_channel_id = source_channel_id
+        guilds = [guild for guild in bot.guilds if guild.id != source_channel_id and guild.text_channels]
+        # Resolve the source guild from the channel ID rather than the invoking interaction.
+        source_channel = bot.get_channel(source_channel_id)
+        source_guild_id = source_channel.guild.id if source_channel else None
+        guilds = [guild for guild in bot.guilds if guild.id != source_guild_id][:25]
+        options = [discord.SelectOption(label=guild.name[:100], value=str(guild.id)) for guild in guilds]
+        super().__init__(placeholder="Choose the destination server…", min_values=1, max_values=1, options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        target_guild = bot.get_guild(int(self.values[0]))
+        if not target_guild:
+            await interaction.response.edit_message(content="Noxen is no longer in that server.", embed=None, view=None)
+            return
+        await interaction.response.edit_message(
+            content=f"**Destination server:** {target_guild.name}\n\nNow choose the channel that should receive the messages.",
+            embed=None, view=ConnectChannelView(self.source_channel_id, target_guild.id)
+        )
+
+
+class ConnectGuildView(discord.ui.View):
+    def __init__(self, source_channel_id: int):
+        super().__init__(timeout=180)
+        self.add_item(ConnectGuildSelect(source_channel_id))
+
+
+class ConnectChannelSelect(discord.ui.Select):
+    def __init__(self, source_channel_id: int, target_guild_id: int):
+        self.source_channel_id = source_channel_id
+        self.target_guild_id = target_guild_id
+        guild = bot.get_guild(target_guild_id)
+        channels = []
+        if guild and guild.me:
+            channels = [
+                channel for channel in guild.text_channels
+                if channel.permissions_for(guild.me).view_channel
+                and channel.permissions_for(guild.me).send_messages
+                and channel.permissions_for(guild.me).embed_links
+            ][:25]
+        options = [discord.SelectOption(label=f"#{channel.name}"[:100], value=str(channel.id)) for channel in channels]
+        super().__init__(placeholder="Choose the destination channel…", min_values=1, max_values=1, options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        target_channel_id = int(self.values[0])
+        source = bot.get_channel(self.source_channel_id)
+        target = bot.get_channel(target_channel_id)
+        if not source or not target:
+            await interaction.response.edit_message(content="One of those channels is no longer available.", embed=None, view=None)
+            return
+        embed = discord.Embed(
+            title="Confirm channel connection",
+            description=(
+                f"**From:** {source.guild.name} · {source.mention}\n"
+                f"**To:** {target.guild.name} · {target.mention}\n\n"
+                "Messages posted in the source channel will be forwarded to the destination. "
+                "This connection is **one-way**."
+            ),
+            color=discord.Color.blurple()
+        )
+        await interaction.response.edit_message(
+            content=None, embed=embed,
+            view=ConfirmChannelConnectView(self.source_channel_id, target_channel_id)
+        )
+
+
+class ConnectChannelView(discord.ui.View):
+    def __init__(self, source_channel_id: int, target_guild_id: int):
+        super().__init__(timeout=180)
+        self.add_item(ConnectChannelSelect(source_channel_id, target_guild_id))
+
+
+class ConfirmChannelConnectView(discord.ui.View):
+    def __init__(self, source_channel_id: int, target_channel_id: int):
+        super().__init__(timeout=180)
+        self.source_channel_id = source_channel_id
+        self.target_channel_id = target_channel_id
+
+    @discord.ui.button(label="Connect channels", style=discord.ButtonStyle.success, emoji="🔗")
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not interaction.guild or not interaction.user.guild_permissions.manage_guild:
+            await interaction.response.send_message("You need Manage Server permission to create connections.", ephemeral=True)
+            return
+        source = bot.get_channel(self.source_channel_id)
+        target = bot.get_channel(self.target_channel_id)
+        if not source or not target or source.guild.id != interaction.guild_id:
+            await interaction.response.edit_message(content="A selected channel is no longer available. Run /connect again.", embed=None, view=None)
+            return
+        target_perms = target.permissions_for(target.guild.me)
+        if not (target_perms.view_channel and target_perms.send_messages and target_perms.embed_links):
+            await interaction.response.send_message("Noxen needs View Channel, Send Messages, and Embed Links in the destination channel.", ephemeral=True)
+            return
+        await interaction.response.defer()
+        await cross_server_channel_links.update_one(
+            {"_id": self.source_channel_id},
+            {"$set": {
+                "source_channel_id": self.source_channel_id,
+                "source_guild_id": source.guild.id,
+                "target_channel_id": self.target_channel_id,
+                "target_guild_id": target.guild.id,
+                "created_by": interaction.user.id,
+                "created_at": dt.datetime.now(dt.timezone.utc),
+                "enabled": True,
+            }},
+            upsert=True,
+        )
+        embed = discord.Embed(
+            title="Channel connection active",
+            description=f"🔗 {source.guild.name} · {source.mention} → {target.guild.name} · {target.mention}\n\nNew messages will now be forwarded automatically.",
+            color=discord.Color.green()
+        )
+        await interaction.edit_original_response(embed=embed, view=None)
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.edit_message(content="Connection cancelled.", embed=None, view=None)
+
+
+@bot.tree.command(name="connect", description="Connect this server's channel to a channel in another server.")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def connect_channel_cmd(interaction: discord.Interaction):
+    if not interaction.guild:
+        await interaction.response.send_message("Run this command inside a server.", ephemeral=True)
+        return
+    source_channels = [
+        channel for channel in interaction.guild.text_channels
+        if interaction.guild.me and channel.permissions_for(interaction.guild.me).view_channel
+        and channel.permissions_for(interaction.guild.me).read_message_history
+    ]
+    if not source_channels:
+        await interaction.response.send_message("Noxen cannot access any text channels in this server.", ephemeral=True)
+        return
+    await interaction.response.send_message(
+        "## Connect a channel\nChoose the channel messages should come **from**.",
+        view=ConnectSourceView(interaction.guild), ephemeral=True
+    )
+
+
+@bot.tree.command(name="connections", description="View channel connections created from this server.")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def list_channel_connections_cmd(interaction: discord.Interaction):
+    if not interaction.guild:
+        await interaction.response.send_message("Run this command inside a server.", ephemeral=True)
+        return
+    docs = await cross_server_channel_links.find({"source_guild_id": interaction.guild.id, "enabled": True}).to_list(length=100)
+    if not docs:
+        await interaction.response.send_message("There are no outgoing channel connections from this server.", ephemeral=True)
+        return
+    lines = []
+    for doc in docs:
+        source = bot.get_channel(int(doc["source_channel_id"]))
+        target = bot.get_channel(int(doc["target_channel_id"]))
+        source_label = source.mention if source else f"channel {doc['source_channel_id']}"
+        target_label = f"{target.guild.name} · {target.mention}" if target else f"channel {doc['target_channel_id']}"
+        lines.append(f"• {source_label} → {target_label}")
+    await interaction.response.send_message("**Active outgoing connections**\n" + "\n".join(lines), ephemeral=True)
+
+
+@bot.tree.command(name="disconnect", description="Remove an outgoing channel connection.")
+@app_commands.checks.has_permissions(manage_guild=True)
+@app_commands.describe(channel="The source channel whose connection you want to remove")
+async def disconnect_channel_cmd(interaction: discord.Interaction, channel: discord.TextChannel):
+    if not interaction.guild or channel.guild.id != interaction.guild_id:
+        await interaction.response.send_message("Choose a source channel in this server.", ephemeral=True)
+        return
+    result = await cross_server_channel_links.delete_one({
+        "_id": channel.id, "source_guild_id": interaction.guild.id
+    })
+    await interaction.response.send_message(
+        f"Disconnected {channel.mention}." if result.deleted_count else f"{channel.mention} has no outgoing connection.",
+        ephemeral=True
+    )
 
 
 # ---------------------------------------------------------------------------
