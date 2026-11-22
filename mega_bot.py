@@ -1743,7 +1743,9 @@ async def open_ticket_for(interaction: discord.Interaction, panel: dict, option:
         else:
             body = "Thank you for contacting support.\nPlease describe your issue and wait for a response."
 
-        ticket_text = f"🎫 New Ticket — {guild.name} · #{number:04d}\n\n{body}"
+        ticket_heading = f"🎫 New Ticket — {guild.name} · #{number:04d}"
+        body_lines = [line for line in body.splitlines() if line.strip() != ticket_heading]
+        ticket_text = ticket_heading + "\n\n" + "\n".join(body_lines).strip()
         msg = await channel.send(
             content=(" ".join(support_role.mention for support_role in roles) + "\n" if roles else "") + ticket_text,
             view=TicketControlView(),
