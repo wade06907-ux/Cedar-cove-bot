@@ -1720,7 +1720,7 @@ async def publish_panel(request):
             child_type = str(child_types[0] if child_types else child_label)[:80]
             if child.get("buttonEnabled", True) is False:
                 continue
-            child_role_ids = child.get("supportRoleIds") if isinstance(child.get("supportRoleIds"), list) else role_ids
+            child_role_ids = child.get("supportRoleIds") if isinstance(child.get("supportRoleIds"), list) and child.get("supportRoleIds") else role_ids
             child_roles = [guild.get_role(int(value)) for value in child_role_ids if str(value or "").isdigit()]
             child_roles = [role for role in child_roles if role is not None]
             options.append({"label": child_label, "description": None, "emoji": None, "ticket_message": child_welcome, "channel_name_format": child_format, "category_id": int(category.id) if category else None, "role_id": child_roles[0].id if child_roles else None, "role_ids": [int(role.id) for role in child_roles], "ticket_type": child_type})
@@ -1730,7 +1730,7 @@ async def publish_panel(request):
         types = [x.strip()[:80] for x in str(panel.get("types") or "General Support").splitlines() if x.strip()][:25]
         if not types:
             types = ["General Support"]
-        panel_role_ids = definition.get("supportRoleIds") if isinstance(definition.get("supportRoleIds"), list) else role_ids
+        panel_role_ids = definition.get("supportRoleIds") if isinstance(definition.get("supportRoleIds"), list) and definition.get("supportRoleIds") else role_ids
         panel_roles = [guild.get_role(int(value)) for value in panel_role_ids if str(value or "").isdigit()]
         panel_roles = [role for role in panel_roles if role is not None]
         options = [{"label": x, "description": None, "emoji": None, "ticket_message": ticket_welcome, "channel_name_format": channel_name_format, "category_id": int(category.id) if category else None, "role_id": panel_roles[0].id if panel_roles else None, "role_ids": [int(role.id) for role in panel_roles]} for x in types]
