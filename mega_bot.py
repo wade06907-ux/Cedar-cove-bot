@@ -4714,6 +4714,15 @@ async def noxen_help(interaction: discord.Interaction):
         inline=False,
     )
     embed.add_field(
+        name="🌐 Cross-server channels",
+        value=(
+            "**/connect** — Connect a channel here to a channel in another server. Messages flow one-way automatically.\n"
+            "**/connections** — View this server's outgoing channel connections.\n"
+            "**/disconnect** — Remove an outgoing channel connection."
+        ),
+        inline=False,
+    )
+    embed.add_field(
         name="🚨 Server protection",
         value=(
             "**/antiraid** — Configure automatic raid detection.\n"
@@ -4795,11 +4804,18 @@ class ConnectSourceView(discord.ui.View):
 class ConnectGuildSelect(discord.ui.Select):
     def __init__(self, source_channel_id: int):
         self.source_channel_id = source_channel_id
-        guilds = [guild for guild in bot.guilds if guild.id != source_channel_id and guild.text_channels]
         # Resolve the source guild from the channel ID rather than the invoking interaction.
         source_channel = bot.get_channel(source_channel_id)
         source_guild_id = source_channel.guild.id if source_channel else None
-        guilds = [guild for guild in bot.guilds if guild.id != source_guild_id][:25]
+        guilds = [
+            guild for guild in bot.guilds
+            if guild.id != source_guild_id and guild.me and any(
+                channel.permissions_for(guild.me).view_channel
+                and channel.permissions_for(guild.me).send_messages
+                and channel.permissions_for(guild.me).embed_links
+                for channel in guild.text_channels
+            )
+        ][:25]
         options = [discord.SelectOption(label=guild.name[:100], value=str(guild.id)) for guild in guilds]
         super().__init__(placeholder="Choose the destination server…", min_values=1, max_values=1, options=options)
 
