@@ -1289,7 +1289,9 @@ def _headers(request: web.Request) -> dict:
         "Vary": "Origin",
         "Cache-Control": "no-store",
     }
-    if origin and origin in {v.strip().rstrip("/") for v in os.getenv("DASHBOARD_ALLOWED_ORIGINS", "").split(",") if v.strip()}:
+    allowed_origins = {v.strip().rstrip("/") for v in os.getenv("DASHBOARD_ALLOWED_ORIGINS", "").split(",") if v.strip()}
+    allowed_origins.update({"https://joincedarcove.com", "https://www.joincedarcove.com"})
+    if origin and origin in allowed_origins:
         headers["Access-Control-Allow-Origin"] = origin
         headers["Access-Control-Allow-Credentials"] = "true"
     return headers
