@@ -3467,7 +3467,7 @@ class PartnerPostModal(discord.ui.Modal):
         super().__init__(title="Create partner post")
         self.bot = bot
         self.guild_id = guild_id
-        self.style = style
+        self.post_style = style
         self.post_title = discord.ui.TextInput(
             label="Partner server name",
             placeholder="Enter the server name",
@@ -3505,13 +3505,13 @@ class PartnerPostModal(discord.ui.Modal):
             "title": title[:100],
             "description": description[:1500],
             "link": link[:500],
-            "style": self.style,
+            "style": self.post_style,
             "createdAt": int(time.time()),
             "createdBy": str(interaction.user.id),
         }
         embed = None
         content = None
-        if self.style == "embed":
+        if self.post_style == "embed":
             embed = discord.Embed(
                 title=post["title"],
                 description=post["description"],
@@ -3524,7 +3524,7 @@ class PartnerPostModal(discord.ui.Modal):
             if post["link"]:
                 content += f'\n{post["link"]}'
         await interaction.response.send_message(
-            content=content if self.style == "plain" else "Preview your partner post. Choose Save or Send.",
+            content=content if self.post_style == "plain" else "Preview your partner post. Choose Save or Send.",
             embed=embed,
             view=PartnerPostPreviewView(self.bot, self.guild_id, post, interaction.user.id, content),
             ephemeral=True,
