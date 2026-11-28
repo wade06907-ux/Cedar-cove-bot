@@ -3422,6 +3422,7 @@ def register_staff_routes(app: web.Application):
     app["panels_store"] = bot.staff_dashboard_store_for_panels
     app["staff_management_store"] = bot.staff_management_store
     app["role_nicknames_store"] = bot.role_nicknames_store
+    app["partner_posts_store"] = bot.partner_posts_store
     app.router.add_route("OPTIONS", "/api/dashboard/{tail:.*}", options_handler)
     app.router.add_route("OPTIONS", "/api/appeals/{tail:.*}", options_handler)
     app.router.add_post("/api/appeals/validate", public_appeal_validate)
@@ -3429,6 +3430,7 @@ def register_staff_routes(app: web.Application):
     app.router.add_get("/api/dashboard/build", api_build)
     app.router.add_get("/api/dashboard/access", dashboard_access)
     app.router.add_get("/api/public/staff", public_staff_list)
+    app.router.add_get("/api/public/partners", public_partners)
     app.router.add_get("/api/dashboard/staff", staff_list)
     app.router.add_get("/api/dashboard/staff-accounts", staff_dashboard_accounts)
     app.router.add_post("/api/dashboard/staff-accounts/action", staff_dashboard_account_action)
@@ -3460,6 +3462,200 @@ def register_staff_routes(app: web.Application):
     app.router.add_put("/api/dashboard/guilds/{guild_id}/role-connections", save_role_connections)
 
 
+class PartnerPostModal(discord.ui.Modal):
+    def __init__(self, bot, guild_id: int, style: str):
+        super().__init__(title="Create partner post")
+        self.bot = bot
+        self.guild_id = guild_id
+        self.style = style
+        self.post_title = discord.ui.TextInput(
+            label="Partner server name",
+            placeholder="Enter the server name",
+            max_length=100,
+            required=True,
+        )
+        self.description = discord.ui.TextInput(
+            label="Description",
+            placeholder="Tell people about this partner server",
+            style=discord.TextStyle.paragraph,
+            max_length=1500,
+            required=True,
+        )
+        self.invite_link = discord.ui.TextInput(
+            label="Invite link (optional)",
+            placeholder="https://discord.gg/...",
+            max_length=500,
+            required=False,
+        )
+        self.add_item(self.post_title)
+        self.add_item(self.description)
+        self.add_item(self.invite_link)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        title = str(self.post_title.value).strip()
+        description = str(self.description.value).strip()
+        link = str(self.invite_link.value or "").strip()
+        if link and not re.match(r"^https://", link, re.IGNORECASE):
+            return await interaction.response.send_message(
+                "The invite link must start with https://.", ephemeral=True
+            )
+        post = {
+            "id": secrets.token_hex(8),
+            "title": title[:100],
+            "description": description[:1500],
+            "link": link[:500],
+            "style": self.style,
+            "createdAt": int(time.time()),
+            "createdBy": str(interaction.user.id),
+        }
+        embed = None
+        content = None
+        if self.style == "embed":
+            embed = discord.Embed(
+                title=post["title"],
+                description=post["description"],
+                color=discord.Color.from_rgb(30, 75, 48),
+                url=post["link"] or None,
+            )
+            embed.set_footer(text="Cedar Cove • Community Partners")
+        else:
+            content = f'{post["title"]}\n{post["description"]}'
+            if post["link"]:
+                content += f'\n{post["link"]}'
+        await interaction.response.send_message(
+            content="Preview your partner post. Choose Save Draft or Send.",
+            embed=embed,
+            view=PartnerPostPreviewView(self.bot, self.guild_id, post, interaction.user.id, content),
+            ephemeral=True,
+        )
+
+
+class PartnerPostPreviewView(discord.ui.View):
+    def __init__(self, bot, guild_id: int, post: dict, owner_id: int, plain_content: str | None):
+        super().__init__(timeout=300)
+        self.bot = bot
+        self.guild_id = guild_id
+        self.post = post
+        self.owner_id = owner_id
+        self.plain_content = plain_content
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.owner_id:
+            await interaction.response.send_message("Only the person who created this post can use these buttons.", ephemeral=True)
+            return False
+        return True
+
+    async def _state(self):
+        store = self.bot.partner_posts_store
+        state = await store.get(str(self.guild_id), {})
+        if not isinstance(state, dict):
+            state = {}
+        state.setdefault("drafts", [])
+        state.setdefault("published", [])
+        return state
+
+    @discord.ui.button(label="Save Draft", style=discord.ButtonStyle.secondary)
+    async def save_draft(self, interaction: discord.Interaction, button: discord.ui.Button):
+        state = await self._state()
+        if not any(item.get("id") == self.post["id"] for item in state["drafts"]):
+            state["drafts"].append(self.post)
+        await self.bot.partner_posts_store.set(str(self.guild_id), state)
+        for item in self.children:
+            item.disabled = True
+        await interaction.response.edit_message(content="Draft saved. It has not been published.", view=self)
+        self.stop()
+
+    @discord.ui.button(label="Send", style=discord.ButtonStyle.success)
+    async def send_post(self, interaction: discord.Interaction, button: discord.ui.Button):
+        config = await self.bot.staff_dashboard_store.get(str(self.guild_id), {})
+        settings = ((config.get("modules") or {}).get("partners") or {})
+        channel_id = str(settings.get("channelId") or "")
+        if not channel_id.isdigit():
+            return await interaction.response.send_message(
+                "No partner announcement channel is configured. Set it in Dashboard → Partners first.",
+                ephemeral=True,
+            )
+        guild = self.bot.get_guild(self.guild_id)
+        channel = guild.get_channel(int(channel_id)) if guild else None
+        if channel is None or not hasattr(channel, "send"):
+            return await interaction.response.send_message(
+                "I couldn't find the configured partner channel. Choose it again in the dashboard.",
+                ephemeral=True,
+            )
+        try:
+            if self.post["style"] == "embed":
+                embed = discord.Embed(
+                    title=self.post["title"],
+                    description=self.post["description"],
+                    color=discord.Color.from_rgb(30, 75, 48),
+                    url=self.post.get("link") or None,
+                )
+                embed.set_footer(text="Cedar Cove • Community Partners")
+                await channel.send(embed=embed)
+            else:
+                await channel.send(self.plain_content or self.post["description"])
+        except discord.Forbidden:
+            return await interaction.response.send_message(
+                "I don't have permission to send messages in the configured partner channel.",
+                ephemeral=True,
+            )
+        except discord.HTTPException:
+            return await interaction.response.send_message(
+                "Discord couldn't send that partner post. Please try again.",
+                ephemeral=True,
+            )
+
+        state = await self._state()
+        state["drafts"] = [item for item in state["drafts"] if item.get("id") != self.post["id"]]
+        published = dict(self.post)
+        published["publishedAt"] = int(time.time())
+        published["channelId"] = channel_id
+        state["published"] = [item for item in state["published"] if item.get("id") != published["id"]]
+        state["published"].append(published)
+        await self.bot.partner_posts_store.set(str(self.guild_id), state)
+        for item in self.children:
+            item.disabled = True
+        await interaction.response.edit_message(
+            content=f"Partner post published in {channel.mention}. The website listing will update automatically.",
+            view=self,
+        )
+        self.stop()
+
+
+async def public_partners(request):
+    bot = request.app["staff_bot"]
+    named_guilds = [guild for guild in bot.guilds if "cedar cove" in guild.name.casefold()]
+    if named_guilds:
+        guild = sorted(named_guilds, key=lambda item: (item.name.casefold() != "cedar cove", item.name.casefold()))[0]
+    elif len(bot.guilds) == 1:
+        guild = bot.guilds[0]
+    else:
+        return _json(request, {"items": []})
+    store = request.app["partner_posts_store"]
+    state = await store.get(str(guild.id), {})
+    published = state.get("published", []) if isinstance(state, dict) else []
+    items = []
+    for post in published:
+        if not isinstance(post, dict):
+            continue
+        title = str(post.get("title") or "").strip()
+        description = str(post.get("description") or "").strip()
+        if not title or not description:
+            continue
+        items.append({
+            "id": str(post.get("id") or ""),
+            "name": title,
+            "title": title,
+            "description": description,
+            "link": str(post.get("link") or ""),
+            "publishedAt": post.get("publishedAt"),
+        })
+    items.sort(key=lambda item: int(item.get("publishedAt") or 0), reverse=True)
+    return _json(request, {"items": items})
+
+
+
+
 _configured_bot = None
 
 # Wrap setup_staff above to keep route registration dependency-free for mega_bot.py.
@@ -3471,3 +3667,33 @@ def setup_staff(bot, get_store, logger):
     bot.staff_dashboard_store_for_panels = get_store("panels")
     bot.staff_management_store = get_store("staff_management_records")
     bot.member_moderation_store = get_store("member_moderation_records")
+    bot.partner_posts_store = get_store("partner_posts")
+
+    if not bot.tree.get_command("new-partners"):
+        @bot.tree.command(name="new-partners", description="Create and publish a Cedar Cove partner post.")
+        @app_commands.choices(style=[
+            app_commands.Choice(name="Rich embed", value="embed"),
+            app_commands.Choice(name="Plain text", value="plain"),
+        ])
+        async def new_partners(interaction: discord.Interaction, style: app_commands.Choice[str]):
+            guild = interaction.guild
+            if guild is None:
+                return await interaction.response.send_message("Use this command inside a server.", ephemeral=True)
+            config = await bot.staff_dashboard_store.get(str(guild.id), {})
+            ladder = (((config.get("modules") or {}).get("staff_ladder") or {}).get("items") or [])
+            ladder_role_ids = {
+                str(item.get("roleId")) for item in ladder
+                if isinstance(item, dict) and str(item.get("roleId") or "").isdigit()
+            }
+            is_manager = (
+                guild.owner_id == interaction.user.id
+                or interaction.user.guild_permissions.administrator
+                or interaction.user.guild_permissions.manage_guild
+                or any(str(role.id) in ladder_role_ids for role in getattr(interaction.user, "roles", []))
+            )
+            if not is_manager:
+                return await interaction.response.send_message(
+                    "Only server management or configured staff can create partner posts.",
+                    ephemeral=True,
+                )
+            await interaction.response.send_modal(PartnerPostModal(bot, guild.id, style.value))
