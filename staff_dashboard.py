@@ -3495,9 +3495,10 @@ class PartnerPostModal(discord.ui.Modal):
         title = str(self.post_title.value).strip()
         description = str(self.description.value).strip()
         link = str(self.invite_link.value or "").strip()
-        if link and not re.match(r"^https://", link, re.IGNORECASE):
+        parsed_link = urlparse(link) if link else None
+        if link and (parsed_link.scheme != "https" or not parsed_link.netloc):
             return await interaction.response.send_message(
-                "The invite link must start with https://.", ephemeral=True
+                "Enter a valid invite link beginning with https://.", ephemeral=True
             )
         post = {
             "id": secrets.token_hex(8),
@@ -3531,7 +3532,7 @@ class PartnerPostModal(discord.ui.Modal):
 
 
 class PartnerPostPreviewView(discord.ui.View):
-    def __init__(self, bot, guild_id: int, post: dict, owner_id: int, plain_content: str | None):
+    def __init__(self, bot, guild_id: int, post: dict, owner_id: int, plain_content):
         super().__init__(timeout=300)
         self.bot = bot
         self.guild_id = guild_id
