@@ -3523,7 +3523,7 @@ class PartnerPostModal(discord.ui.Modal):
             if post["link"]:
                 content += f'\n{post["link"]}'
         await interaction.response.send_message(
-            content="Preview your partner post. Choose Save Draft or Send.",
+            content=content if self.style == "plain" else "Preview your partner post. Choose Save Draft or Send.",
             embed=embed,
             view=PartnerPostPreviewView(self.bot, self.guild_id, post, interaction.user.id, content),
             ephemeral=True,
