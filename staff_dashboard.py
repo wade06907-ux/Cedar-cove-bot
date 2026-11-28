@@ -3524,7 +3524,7 @@ class PartnerPostModal(discord.ui.Modal):
             if post["link"]:
                 content += f'\n{post["link"]}'
         await interaction.response.send_message(
-            content=content if self.style == "plain" else "Preview your partner post. Choose Save Draft or Send.",
+            content=content if self.style == "plain" else "Preview your partner post. Choose Save or Send.",
             embed=embed,
             view=PartnerPostPreviewView(self.bot, self.guild_id, post, interaction.user.id, content),
             ephemeral=True,
@@ -3555,15 +3555,21 @@ class PartnerPostPreviewView(discord.ui.View):
         state.setdefault("published", [])
         return state
 
-    @discord.ui.button(label="Save Draft", style=discord.ButtonStyle.secondary)
-    async def save_draft(self, interaction: discord.Interaction, button: discord.ui.Button):
+    @discord.ui.button(label="Save", style=discord.ButtonStyle.secondary)
+    async def save_listing(self, interaction: discord.Interaction, button: discord.ui.Button):
         state = await self._state()
-        if not any(item.get("id") == self.post["id"] for item in state["drafts"]):
-            state["drafts"].append(self.post)
+        saved = dict(self.post)
+        saved["publishedAt"] = int(time.time())
+        saved["savedOnly"] = True
+        state["published"] = [item for item in state["published"] if item.get("id") != saved["id"]]
+        state["published"].append(saved)
         await self.bot.partner_posts_store.set(str(self.guild_id), state)
         for item in self.children:
             item.disabled = True
-        await interaction.response.edit_message(content="Draft saved. It has not been published.", view=self)
+        await interaction.response.edit_message(
+            content="Partner listing saved to the website. No Discord announcement was sent.",
+            view=self,
+        )
         self.stop()
 
     @discord.ui.button(label="Send", style=discord.ButtonStyle.success)
