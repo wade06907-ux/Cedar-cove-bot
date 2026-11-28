@@ -3690,7 +3690,11 @@ def setup_staff(bot, get_store, logger):
                 guild.owner_id == interaction.user.id
                 or interaction.user.guild_permissions.administrator
                 or interaction.user.guild_permissions.manage_guild
-                or any(str(role.id) in ladder_role_ids for role in getattr(interaction.user, "roles", []))
+                or any(
+                    str(role.id) in ladder_role_ids
+                    or re.sub(r"[^a-z0-9]+", " ", role.name.casefold()).strip() in {"owner", "co owner", "admin", "administrator"}
+                    for role in getattr(interaction.user, "roles", [])
+                )
             )
             if not is_manager:
                 return await interaction.response.send_message(
